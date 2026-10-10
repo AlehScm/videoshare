@@ -1,10 +1,21 @@
 "use client";
 
-import { Maximize, ScreenShare, ScreenShareOff } from "lucide-react";
+import { ChevronDown, Maximize, ScreenShare, ScreenShareOff, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import type { Participant } from "@/hooks/useRoom";
+import {
+  DEFAULT_PRESET,
+  FRAME_RATES,
+  parsePreset,
+  presetKey,
+  presetLabel,
+  RESOLUTIONS,
+  type QualityPreset,
+} from "@/lib/quality";
 import { dangerButtonClass, primaryButtonClass } from "@/lib/styles";
 import { ReplaceShareDialog } from "./ReplaceShareDialog";
+
+const PRESETS: QualityPreset[] = RESOLUTIONS.flatMap((height) => FRAME_RATES.map((fps) => ({ height, fps })));
 
 type Props = {
   canShare: boolean;
@@ -12,10 +23,40 @@ type Props = {
   presenter: Participant | null;
   hasStream: boolean;
   disabled: boolean;
+  preset: QualityPreset;
+  onPresetChange: (preset: QualityPreset) => void;
   onStart: () => void;
   onStop: () => void;
   onFullscreen: () => void;
 };
+
+function QualitySelect({ preset, onChange }: { preset: QualityPreset; onChange: (p: QualityPreset) => void }) {
+  return (
+    <label
+      title="Qualidade que você envia quando compartilha a tela"
+      className="relative inline-flex h-12 items-center gap-2 rounded-full border border-line pl-4 pr-9 text-sm font-medium transition focus-within:ring-4 focus-within:ring-signal/25 hover:bg-raised"
+    >
+      <SlidersHorizontal className="size-4 shrink-0 text-muted" aria-hidden />
+      <span className="sr-only">Qualidade da sua tela</span>
+      <select
+        value={presetKey(preset)}
+        onChange={(event) => {
+          const next = parsePreset(event.target.value);
+          if (next) onChange(next);
+        }}
+        className="cursor-pointer appearance-none bg-transparent tabular-nums outline-none"
+      >
+        {PRESETS.map((option) => (
+          <option key={presetKey(option)} value={presetKey(option)} className="bg-panel text-fg">
+            {presetLabel(option)}
+            {presetKey(option) === presetKey(DEFAULT_PRESET) ? " (padrão)" : ""}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 size-4 text-muted" aria-hidden />
+    </label>
+  );
+}
 
 export function ControlBar({
   canShare,
@@ -23,6 +64,8 @@ export function ControlBar({
   presenter,
   hasStream,
   disabled,
+  preset,
+  onPresetChange,
   onStart,
   onStop,
   onFullscreen,
@@ -60,6 +103,8 @@ export function ControlBar({
           Compartilhar tela
         </button>
       )}
+
+      {canShare && <QualitySelect preset={preset} onChange={onPresetChange} />}
 
       <button
         type="button"

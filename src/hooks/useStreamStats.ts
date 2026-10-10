@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Limitation, Participant, PresenterQuality, QualityStatus } from "@/hooks/useRoom";
-import { videoBitrateFor } from "@/lib/media";
+import { presetBitrate, presetLabel, type QualityPreset } from "@/lib/quality";
 
 const POLL_MS = 1000;
 const STATUS_EVERY_TICKS = 2;
 const STALE_STATUS_MS = 6000;
 const FREEZE_WINDOW_MS = 60_000;
+const DROP_RATIO = 0.75;
 
 export type QualityLevel = "boa" | "instavel" | "ruim";
 
@@ -27,6 +28,7 @@ export type SendRow = {
   name: string;
   height: number;
   fps: number;
+  sourceFps: number;
   kbps: number;
   capKbps: number;
   limitation: Limitation;
@@ -38,6 +40,8 @@ export type QualityReport = {
   role: "assistindo" | "apresentando";
   level: QualityLevel;
   summary: string;
+  /** Qualidade escolhida por quem apresenta, quando conhecida. */
+  chosen: string | null;
   issues: string[];
   viewer?: ViewerMetrics;
   rows?: SendRow[];
@@ -49,7 +53,8 @@ type Options = {
   presenterStream: MediaStream | null;
   participants: Participant[];
   presenterQuality: PresenterQuality | null;
-  sendQualityStatus: (status: QualityStatus) => void;
+  sendQualityStatus: (status: Omit<QualityStatus, "preset">) => void;
+  preset: QualityPreset;
 };
 
 type Stat = Record<string, unknown> & { id: string; type: string; timestamp: number };
@@ -92,11 +97,11 @@ async function readStats(pc: RTCPeerConnection): Promise<Map<string, Stat>> {
   return stats;
 }
 
-function limitationText(limitation: Limitation, who: string): string | null {
+function limitationText(limitation: Limitation, who: string, chosen: string): string | null {
   if (limitation === "bandwidth") {
-    return `A internet de envio de ${who} está no limite; a resolução baixou pra manter a fluidez.`;
+    return `A internet de envio de ${who} não está dando conta de ${chosen}; a imagem pode perder quadros ou nitidez.`;
   }
-  if (limitation === "cpu") return `O computador de ${who} está sobrecarregado com a transmissão.`;
+  if (limitation === "cpu") return `O computador de ${who} não está dando conta de codificar ${chosen}.`;
   return null;
 }
 
@@ -175,7 +180,8 @@ export function useStreamStats(options: Options): QualityReport | null {
       const issues: string[] = [];
       const fresh =
         presenterQuality?.peerId === presenter.id && Date.now() - presenterQuality.at < STALE_STATUS_MS;
-      const remote = fresh ? limitationText(presenterQuality.limitation, presenter.name) : null;
+      const chosen = fresh ? presetLabel(presenterQuality.preset) : null;
+      const remote = fresh && chosen ? limitationText(presenterQuality.limitation, presenter.name, chosen) : null;
       if (remote) {
         issues.push(remote);
         level = worse(level, "instavel");
@@ -204,14 +210,16 @@ export function useStreamStats(options: Options): QualityReport | null {
       }
 
       const summary = metrics.height ? `${metrics.height}p · ${metrics.fps} fps` : "Medindo…";
-      return { role: "assistindo", level, summary, issues, viewer: metrics };
+      return { role: "assistindo", level, summary, chosen, issues, viewer: metrics };
     }
 
     async function measurePresenter(): Promise<QualityReport | null> {
       const { getConnections, participants, presenterStream, sendQualityStatus } = latest.current;
       const trackId = presenterStream?.getVideoTracks()[0]?.id;
       const connections = Object.entries(getConnections());
-      const capKbps = Math.round(videoBitrateFor(connections.length) / 1000);
+      const { preset } = latest.current;
+      const chosen = presetLabel(preset);
+      const capKbps = Math.round(presetBitrate(preset) / 1000);
       const names = new Map(participants.map((p) => [p.id, p.name]));
 
       const rows = (
@@ -225,6 +233,7 @@ export function useStreamStats(options: Options): QualityReport | null {
               return !trackId || !source || source.trackIdentifier === trackId;
             });
             if (!outbound) return null;
+            const sourceFps = num(stats.get(String(outbound.mediaSourceId)), "framesPerSecond");
             const remoteIn = [...stats.values()].find(
               (s) => s.type === "remote-inbound-rtp" && s.localId === outbound.id,
             );
@@ -237,14 +246,25 @@ export function useStreamStats(options: Options): QualityReport | null {
             });
             const reason = outbound.qualityLimitationReason;
             const remoteRtt = num(remoteIn, "roundTripTime");
+            const fps = Math.round(num(outbound, "framesPerSecond"));
+            // Com a resolução travada, falta de banda aparece como quadros descartados no envio,
+            // que o navegador não marca como limitação. Tela parada gera poucos quadros na captura
+            // também, então compara com o que foi capturado e não com o fps escolhido.
+            const droppingFrames = sourceFps >= 10 && fps > 0 && fps < sourceFps * DROP_RATIO;
             return {
               id: peerId,
               name: names.get(peerId) ?? "Alguém",
               height: num(outbound, "frameHeight"),
-              fps: Math.round(num(outbound, "framesPerSecond")),
+              fps,
+              sourceFps: Math.round(sourceFps),
               kbps: d ? Math.round((d.bytes * 8) / d.at) : 0,
               capKbps,
-              limitation: reason === "cpu" || reason === "bandwidth" || reason === "other" ? reason : "none",
+              limitation:
+                reason === "cpu" || reason === "bandwidth" || reason === "other"
+                  ? reason
+                  : droppingFrames
+                    ? "bandwidth"
+                    : "none",
               lossPct: num(remoteIn, "fractionLost") * 100,
               rttMs: remoteRtt > 0 ? Math.round(remoteRtt * 1000) : rttOf(selectedPair(stats)),
             };
@@ -263,12 +283,14 @@ export function useStreamStats(options: Options): QualityReport | null {
       const issues: string[] = [];
       if (limitation === "bandwidth") {
         issues.push(
-          `Sua internet de envio está no limite pra ${rows.length} ${rows.length === 1 ? "pessoa" : "pessoas"}; a resolução baixou pra manter a fluidez.`,
+          `Sua internet de envio não está dando conta de ${chosen} pra ${rows.length} ${rows.length === 1 ? "pessoa" : "pessoas"}. Escolha uma qualidade menor.`,
         );
         level = "instavel";
       }
       if (limitation === "cpu") {
-        issues.push("Seu computador está sobrecarregado com a transmissão. Fechar programas pesados ajuda.");
+        issues.push(
+          `Seu computador não está dando conta de codificar ${chosen} pra ${rows.length} ${rows.length === 1 ? "pessoa" : "pessoas"}. Escolha uma qualidade menor ou feche programas pesados.`,
+        );
         level = "instavel";
       }
       for (const row of rows) {
@@ -288,7 +310,7 @@ export function useStreamStats(options: Options): QualityReport | null {
         : rows.length === 0
           ? "Ninguém assistindo"
           : "Medindo…";
-      return { role: "apresentando", level, summary, issues, rows };
+      return { role: "apresentando", level, summary, chosen, issues, rows };
     }
 
     async function poll() {

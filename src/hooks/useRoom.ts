@@ -2,14 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageAction, Room } from "trystero";
-import {
-  captureScreen,
-  preferHardwareCodec,
-  stopTracks,
-  tuneVideoSender,
-  videoBitrateFor,
-} from "@/lib/media";
+import { applyPresetToTrack, captureScreen, stopTracks, tuneVideoSender } from "@/lib/media";
 import { MAX_NAME_LENGTH } from "@/lib/name-storage";
+import { loadPreset, parsePreset, presetKey, savePreset, type QualityPreset } from "@/lib/quality";
 
 export const MAX_PER_ROOM = 6;
 const APP_ID = "videoshare-acm-presenca";
@@ -19,16 +14,22 @@ type Hello = { name: string; joinedAt: number; sharingSince: number | null };
 
 export type Limitation = "none" | "cpu" | "bandwidth" | "other";
 /** O que quem apresenta conta pros outros sobre o próprio envio (ver useStreamStats). */
-export type QualityStatus = { limitation: Limitation; viewers: number };
-export type PresenterQuality = QualityStatus & { peerId: string; at: number };
+export type QualityStatus = { limitation: Limitation; viewers: number; preset: string };
+export type PresenterQuality = { limitation: Limitation; viewers: number; preset: QualityPreset } & {
+  peerId: string;
+  at: number;
+};
 
 const LIMITATIONS: readonly Limitation[] = ["none", "cpu", "bandwidth", "other"];
 
-function parseQualityStatus(data: unknown): QualityStatus | null {
+function parseQualityStatus(data: unknown): Omit<PresenterQuality, "peerId" | "at"> | null {
   if (typeof data !== "object" || data === null) return null;
-  const { limitation, viewers } = data as Record<string, unknown>;
-  if (!LIMITATIONS.includes(limitation as Limitation) || typeof viewers !== "number") return null;
-  return { limitation: limitation as Limitation, viewers };
+  const { limitation, viewers, preset } = data as Record<string, unknown>;
+  const parsedPreset = parsePreset(preset);
+  if (!LIMITATIONS.includes(limitation as Limitation) || typeof viewers !== "number" || !parsedPreset) {
+    return null;
+  }
+  return { limitation: limitation as Limitation, viewers, preset: parsedPreset };
 }
 
 export type Participant = Hello & { id: string; isSelf: boolean };
@@ -75,6 +76,8 @@ export function useRoom(roomId: string, name: string) {
   const peersRef = useRef<Record<string, Hello>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [preset, setPreset] = useState<QualityPreset>(loadPreset);
+  const presetRef = useRef(preset);
 
   const [selfId, setSelfId] = useState<string | null>(null);
   const [me, setMe] = useState<Hello | null>(null);
@@ -107,39 +110,38 @@ export function useRoom(roomId: string, name: string) {
     updateMe({ sharingSince: null });
   }, [updateMe]);
 
-  /** Divide o upload entre quem assiste: recalcula o teto de bitrate de todas as conexões. */
+  /** Aplica a qualidade escolhida por quem apresenta em todas as conexões. */
   const retuneSenders = useCallback(() => {
     const room = roomRef.current;
     const track = localStreamRef.current?.getVideoTracks()[0];
     if (!room || !track) return;
-    const connections = Object.values(room.getPeers());
-    const maxBitrate = videoBitrateFor(connections.length);
-    connections.forEach((pc) => void tuneVideoSender(pc, track, maxBitrate));
+    Object.values(room.getPeers()).forEach((pc) => void tuneVideoSender(pc, track, presetRef.current));
   }, []);
 
-  /**
-   * Envia a tela pra uma pessoa. O Trystero só faz o addTrack depois de um await interno;
-   * o `.then` roda antes da renegociação, a tempo de trocar o codec pra H.264.
-   */
   const sendScreen = useCallback(
     (room: Room, stream: MediaStream, peerId: string) => {
-      const track = stream.getVideoTracks()[0];
       const [sent] = room.addStream(stream, { target: peerId });
-      void sent
-        ?.then(() => {
-          const pc = room.getPeers()[peerId];
-          if (pc && track) preferHardwareCodec(pc, track);
-          retuneSenders();
-        })
-        .catch(() => {});
+      void sent?.then(retuneSenders).catch(() => {});
+    },
+    [retuneSenders],
+  );
+
+  /** Quem apresenta escolhe a qualidade; durante a transmissão a troca vale na hora. */
+  const changePreset = useCallback(
+    (next: QualityPreset) => {
+      presetRef.current = next;
+      setPreset(next);
+      savePreset(next);
+      const track = localStreamRef.current?.getVideoTracks()[0];
+      if (track) void applyPresetToTrack(track, next).then(retuneSenders);
     },
     [retuneSenders],
   );
 
   const getConnections = useCallback(() => roomRef.current?.getPeers() ?? {}, []);
 
-  const sendQualityStatus = useCallback((status: QualityStatus) => {
-    void qstatRef.current?.send(status).catch(() => {});
+  const sendQualityStatus = useCallback((status: Omit<QualityStatus, "preset">) => {
+    void qstatRef.current?.send({ ...status, preset: presetKey(presetRef.current) }).catch(() => {});
   }, []);
 
   // Garante que o novo compartilhamento fique "depois" do atual mesmo com relógios desalinhados.
@@ -153,7 +155,7 @@ export function useRoom(roomId: string, name: string) {
 
     let stream: MediaStream | null;
     try {
-      stream = await captureScreen();
+      stream = await captureScreen(presetRef.current);
     } catch {
       showNotice("Não foi possível compartilhar a tela. Verifique a permissão do navegador.");
       return;
@@ -310,5 +312,7 @@ export function useRoom(roomId: string, name: string) {
     stopShare,
     getConnections,
     sendQualityStatus,
+    preset,
+    changePreset,
   };
 }

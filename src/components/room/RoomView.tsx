@@ -23,6 +23,7 @@ export function RoomView({ roomId, name }: { roomId: string; name: string }) {
     participants: room.participants,
     presenterQuality: room.presenterQuality,
     sendQualityStatus: room.sendQualityStatus,
+    preset: room.preset,
   });
 
   if (room.status === "cheia") {
@@ -78,6 +79,8 @@ export function RoomView({ roomId, name }: { roomId: string; name: string }) {
             presenter={room.presenter}
             hasStream={room.presenterStream !== null}
             disabled={connecting}
+            preset={room.preset}
+            onPresetChange={room.changePreset}
             onStart={() => void room.startShare()}
             onStop={room.stopShare}
             onFullscreen={() => void stageRef.current?.requestFullscreen().catch(() => {})}

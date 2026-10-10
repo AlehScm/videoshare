@@ -1,3 +1,5 @@
+import { presetBitrate, presetWidth, type QualityPreset } from "@/lib/quality";
+
 export function canShareScreen(): boolean {
   return typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function";
 }
@@ -8,16 +10,18 @@ type ScreenCaptureOptions = DisplayMediaStreamOptions & {
   windowAudio?: "exclude" | "window" | "system";
 };
 
-export const MAX_FPS = 30;
+function videoConstraints(preset: QualityPreset): MediaTrackConstraints {
+  return {
+    width: { max: presetWidth(preset) },
+    height: { max: preset.height },
+    frameRate: { ideal: preset.fps, max: preset.fps },
+  };
+}
 
 /** Abre o seletor de tela do navegador. `null` quando a pessoa cancela. */
-export async function captureScreen(): Promise<MediaStream | null> {
+export async function captureScreen(preset: QualityPreset): Promise<MediaStream | null> {
   const options: ScreenCaptureOptions = {
-    video: {
-      width: { max: 1920 },
-      height: { max: 1080 },
-      frameRate: { ideal: MAX_FPS, max: MAX_FPS },
-    },
+    video: videoConstraints(preset),
     audio: true,
     systemAudio: "include",
     // Ao escolher uma janela (ex.: um jogo), oferece só o som daquele programa, não o do sistema todo.
@@ -25,7 +29,6 @@ export async function captureScreen(): Promise<MediaStream | null> {
   };
   try {
     const stream = await navigator.mediaDevices.getDisplayMedia(options);
-    // "motion": sob pressão o navegador mantém os fps e baixa a resolução (fluidez primeiro).
     for (const track of stream.getVideoTracks()) track.contentHint = "motion";
     return stream;
   } catch (error) {
@@ -34,41 +37,32 @@ export async function captureScreen(): Promise<MediaStream | null> {
   }
 }
 
+/** Troca a qualidade da captura no meio da transmissão. */
+export async function applyPresetToTrack(track: MediaStreamTrack, preset: QualityPreset): Promise<void> {
+  await track.applyConstraints(videoConstraints(preset)).catch(() => {});
+}
+
 export function stopTracks(stream: MediaStream | null): void {
   stream?.getTracks().forEach((track) => track.stop());
 }
 
-const UPLOAD_BUDGET_BPS = 24_000_000;
-const MIN_VIDEO_BPS = 3_000_000;
-const MAX_VIDEO_BPS = 8_000_000;
-
-/** Teto de bitrate por pessoa: divide o upload de quem apresenta entre quem assiste. */
-export function videoBitrateFor(viewers: number): number {
-  const share = UPLOAD_BUDGET_BPS / Math.max(1, viewers);
-  return Math.round(Math.min(MAX_VIDEO_BPS, Math.max(MIN_VIDEO_BPS, share)));
-}
-
-/**
- * Coloca H.264 na frente: no Windows o Chrome o codifica na placa de vídeo, o que evita
- * uma codificação VP8 em software por pessoa. Precisa rodar antes da oferta (logo após o addTrack).
- */
-export function preferHardwareCodec(pc: RTCPeerConnection, track: MediaStreamTrack): void {
-  const transceiver = pc.getTransceivers().find((t) => t.sender.track === track);
-  const codecs = RTCRtpReceiver.getCapabilities?.("video")?.codecs;
-  if (!transceiver || !codecs || typeof transceiver.setCodecPreferences !== "function") return;
-  const isH264 = (codec: RTCRtpCodec) => codec.mimeType.toLowerCase() === "video/h264";
-  try {
-    transceiver.setCodecPreferences([...codecs.filter(isH264), ...codecs.filter((c) => !isH264(c))]);
-  } catch {}
+/** Quanto o encoder precisa reduzir se a captura vier maior que a qualidade escolhida. */
+function scaleDownFor(track: MediaStreamTrack, preset: QualityPreset): number {
+  const { width = 0, height = 0 } = track.getSettings();
+  return Math.max(1, width / presetWidth(preset), height / preset.height);
 }
 
 type SendParameters = RTCRtpSendParameters & { degradationPreference?: RTCDegradationPreference };
 
-/** Aplica teto de bitrate/fps no envio de vídeo; espera a negociação criar os encodings. */
+/**
+ * Fixa a qualidade escolhida por quem apresenta no envio de vídeo: resolução travada
+ * (`maintain-resolution`, sem descer em escada), fps e bitrate do preset.
+ * Espera a negociação criar os encodings.
+ */
 export async function tuneVideoSender(
   pc: RTCPeerConnection,
   track: MediaStreamTrack,
-  maxBitrate: number,
+  preset: QualityPreset,
 ): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt++) {
     if (pc.connectionState === "closed" || track.readyState === "ended") return;
@@ -76,9 +70,10 @@ export async function tuneVideoSender(
     if (!sender) return;
     const params: SendParameters = sender.getParameters();
     if (params.encodings?.length) {
-      params.encodings[0].maxBitrate = maxBitrate;
-      params.encodings[0].maxFramerate = MAX_FPS;
-      params.degradationPreference = "maintain-framerate";
+      params.encodings[0].maxBitrate = presetBitrate(preset);
+      params.encodings[0].maxFramerate = preset.fps;
+      params.encodings[0].scaleResolutionDownBy = scaleDownFor(track, preset);
+      params.degradationPreference = "maintain-resolution";
       try {
         await sender.setParameters(params);
       } catch {

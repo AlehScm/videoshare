@@ -49,7 +49,10 @@ function SenderDetails({ rows }: { rows: SendRow[] }) {
             </span>
           </span>
           <span className="text-xs tabular-nums text-muted">
-            {row.height ? `${row.height}p · ${row.fps} fps` : "Conectando…"} · {mbps(row.kbps)} de até{" "}
+            {row.height
+              ? `${row.height}p · ${row.fps}${row.sourceFps > row.fps + 2 ? ` de ${row.sourceFps}` : ""} fps`
+              : "Conectando…"}{" "}
+            · {mbps(row.kbps)} de até{" "}
             {mbps(row.capKbps)} Mbps
             {row.lossPct >= 1 ? ` · ${pct(row.lossPct)}% de perda` : ""}
           </span>
@@ -104,6 +107,12 @@ export function QualityIndicator({ report }: { report: QualityReport | null }) {
             <p className="text-muted">Medindo a conexão…</p>
           ) : (
             <>
+              {report.chosen && (
+                <p className="text-muted">
+                  Qualidade escolhida {report.role === "apresentando" ? "por você" : "por quem apresenta"}:{" "}
+                  <span className="font-medium text-fg">{report.chosen}</span>
+                </p>
+              )}
               {report.issues.length > 0 ? (
                 <ul className="flex flex-col gap-1.5">
                   {report.issues.map((issue) => (

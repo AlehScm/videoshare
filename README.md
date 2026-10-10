@@ -26,15 +26,15 @@ Todo push na `master` publica no GitHub Pages pelo workflow `.github/workflows/d
 - **Limite de 6 por sala** (`MAX_PER_ROOM` em `src/hooks/useRoom.ts`): quem chega além do limite vê "sala cheia" e sai sozinho.
 - **Compartilhar tela**: qualquer pessoa, uma por vez. Quem apresenta envia o stream do `getDisplayMedia` (com o áudio da aba ou do sistema, quando o navegador oferece) pra cada participante, inclusive pra quem entra depois. Se outra pessoa clicar em compartilhar enquanto alguém apresenta, aparece uma confirmação e a tela dela substitui a atual: vence quem começou por último.
 - **Volume**: cada pessoa que assiste ajusta o volume (ou silencia) a tela compartilhada só no próprio computador, pelo controle no canto do palco. O valor fica salvo no navegador.
-- **Qualidade da transmissão** (`src/lib/media.ts`, `sendScreen`/`retuneSenders` em `useRoom.ts`):
-  - **Captura:** até 1080p a 30 fps.
-  - **Fluidez primeiro:** com `contentHint: "motion"` e `maintain-framerate`, quando falta banda cai a resolução, não os fps.
-  - **Codec:** H.264 vai na frente pra codificar na placa de vídeo e não no processador.
-  - **Teto de bitrate:** divide ~24 Mbps de upload entre quem assiste, de 3 a 8 Mbps por pessoa (5 pessoas assistindo dá 4,8 Mbps cada). O controle de congestionamento do WebRTC continua baixando se a rede não aguentar.
+- **Qualidade escolhida por quem apresenta** (`src/lib/quality.ts`, `src/lib/media.ts`, `changePreset`/`retuneSenders` em `useRoom.ts`):
+  - **Seletor:** fica ao lado de "Compartilhar tela". Opções de 480p, 720p ou 1080p a 30 ou 60 fps, padrão **720p · 30 fps**. A escolha fica salva no navegador.
+  - **Troca ao vivo:** mudar durante a transmissão vale na hora (`applyConstraints` + `setParameters`).
+  - **Resolução travada:** `degradationPreference: "maintain-resolution"`, e `scaleResolutionDownBy` garante que a captura não passe da escolhida. A resolução não desce sozinha. Se faltar banda ou processador, a imagem perde quadros e o ícone de qualidade sugere escolher uma qualidade menor.
+  - **Taxa por qualidade:** 720p30 ≈ 2,5 Mbps, 1080p60 ≈ 7 Mbps por pessoa. O codec é o padrão do navegador.
 - **Ícone de qualidade** (`src/hooks/useStreamStats.ts`, `QualityIndicator.tsx`): no canto do palco. Lê o `getStats()` a cada segundo e mostra:
   - **Pra quem assiste:** resolução, fps, taxa recebida, perda, ping, travadas e codec.
   - **Pra quem apresenta:** o envio pra cada pessoa.
-  - **O problema em português:** internet de envio no limite, computador sobrecarregado, perda de pacotes, ping alto. Quem apresenta avisa os outros se está limitado (action `qstat`), então quem assiste sabe se o problema é do lado de lá ou do seu.
+  - **O problema em português:** internet de envio sem dar conta da qualidade escolhida, computador sobrecarregado, perda de pacotes, ping alto, travadas. A falta de banda é detectada comparando os quadros enviados com os capturados, pra não acusar tela parada. Quem apresenta avisa os outros (action `qstat`, com a qualidade escolhida), então quem assiste sabe se o problema é do lado de lá ou do seu.
 
 ```
 src/
@@ -44,7 +44,8 @@ src/
   components/room/RoomView.tsx  sala: barra do topo, palco, controles, participantes
   hooks/useRoom.ts              toda a lógica P2P: presença e compartilhamento (Trystero)
   hooks/useStreamStats.ts       estatísticas WebRTC e diagnóstico do ícone de qualidade
-  lib/media.ts                  captura de tela, codec H.264 e teto de bitrate
+  lib/media.ts                  captura de tela e ajuste do envio (resolução, fps, bitrate)
+  lib/quality.ts                opções de qualidade (480p a 1080p, 30/60 fps) e taxas
   lib/                          id de sala, nome salvo, classes de estilo
 ```
 
@@ -52,7 +53,7 @@ src/
 
 - **Relays de terceiros**: a descoberta depende dos relays públicos do Nostr. O Trystero usa vários ao mesmo tempo, mas eles não são nossos.
 - **Redes restritas**: em NAT simétrico ou rede corporativa o WebRTC direto pode falhar. A solução é configurar um servidor TURN (`turnConfig` no `joinRoom`).
-- **Upload de quem apresenta**: a tela é enviada separadamente pra cada pessoa (até 5). 1080p pra 5 pessoas pede ~24 Mbps de upload. Com menos que isso a resolução cai, mas a fluidez fica, e o ícone de qualidade mostra que o limite é a internet de envio. Tirar esse limite exigiria um servidor de mídia (SFU).
+- **Upload de quem apresenta**: a tela é enviada separadamente pra cada pessoa (até 5). Com 5 pessoas assistindo, 720p30 pede ~12,5 Mbps e 1080p60 ~35 Mbps de upload. Se não der conta, a imagem perde quadros e o ícone avisa pra baixar a qualidade. Tirar esse limite exigiria um servidor de mídia (SFU).
 - **Celular**: dá pra assistir, mas não compartilhar. Os navegadores de celular não oferecem `getDisplayMedia`.
 - **Áudio da tela**: só vai quando o navegador mostra a opção de áudio no seletor.
   - **Aba:** manda só o som da aba.
