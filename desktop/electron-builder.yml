@@ -1,0 +1,27 @@
+appId: io.github.alehscm.videoshare
+productName: videoshare
+copyright: AlehScm
+directories:
+  output: release
+  buildResources: assets
+files:
+  - dist/**
+  - assets/**
+  - package.json
+# Binários nativos não carregam de dentro do .asar.
+asarUnpack:
+  - node_modules/loopback-capture/prebuilds/**
+  - node_modules/koffi/**
+win:
+  target: nsis
+  icon: assets/icon.png
+  artifactName: videoshare-setup-${version}.${ext}
+nsis:
+  oneClick: true
+  perMachine: false
+  shortcutName: videoshare
+publish:
+  provider: github
+  owner: AlehScm
+  repo: videoshare
+  releaseType: release

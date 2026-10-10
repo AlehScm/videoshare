@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageAction, Room } from "trystero";
-import { applyPresetToTrack, captureScreen, stopTracks, tuneVideoSender } from "@/lib/media";
+import type { DesktopSelection } from "@/lib/desktop";
+import {
+  applyPresetToTrack,
+  captureScreen,
+  stopTracks,
+  tuneVideoSender,
+  type CapturedScreen,
+} from "@/lib/media";
 import { MAX_NAME_LENGTH } from "@/lib/name-storage";
 import { loadPreset, parsePreset, presetKey, savePreset, type QualityPreset } from "@/lib/quality";
 
@@ -81,6 +88,7 @@ export function useRoom(roomId: string, name: string) {
   const selfIdRef = useRef("");
   const peersRef = useRef<Record<string, Hello>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
+  const releaseRef = useRef<() => void>(() => {});
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [preset, setPreset] = useState<QualityPreset>(loadPreset);
   const presetRef = useRef(preset);
@@ -106,15 +114,22 @@ export function useRoom(roomId: string, name: string) {
     void helloRef.current?.send(meRef.current);
   }, []);
 
+  /** Para a captura local (e o áudio do app de desktop, se houver). */
+  const endCapture = useCallback(() => {
+    stopTracks(localStreamRef.current);
+    localStreamRef.current = null;
+    releaseRef.current();
+    releaseRef.current = () => {};
+  }, []);
+
   const stopShare = useCallback(() => {
     const stream = localStreamRef.current;
     if (!stream) return;
-    localStreamRef.current = null;
     roomRef.current?.removeStream(stream);
-    stopTracks(stream);
+    endCapture();
     setLocalStream(null);
     updateMe({ sharingSince: null });
-  }, [updateMe]);
+  }, [endCapture, updateMe]);
 
   /** Aplica a qualidade escolhida por quem apresenta em todas as conexões. */
   const retuneSenders = useCallback(() => {
@@ -156,33 +171,40 @@ export function useRoom(roomId: string, name: string) {
     return Math.max(Date.now(), ...known.map((since) => since + 1));
   }, []);
 
-  const startShare = useCallback(async () => {
-    if (localStreamRef.current || !roomRef.current) return;
+  /** `selection` vem do seletor do app de desktop; no navegador fica vazio. */
+  const startShare = useCallback(
+    async (selection?: DesktopSelection) => {
+      if (localStreamRef.current || !roomRef.current) return;
 
-    let stream: MediaStream | null;
-    try {
-      stream = await captureScreen(presetRef.current);
-    } catch {
-      showNotice("Não foi possível compartilhar a tela. Verifique a permissão do navegador.");
-      return;
-    }
-    if (!stream) return;
+      let captured: CapturedScreen | null;
+      try {
+        captured = await captureScreen(presetRef.current, selection);
+      } catch {
+        showNotice("Não foi possível compartilhar a tela. Verifique a permissão do navegador.");
+        return;
+      }
+      if (!captured) return;
+      const { stream, release } = captured;
 
-    const room = roomRef.current;
-    if (!room) {
-      stopTracks(stream);
-      return;
-    }
+      const room = roomRef.current;
+      if (!room) {
+        stopTracks(stream);
+        release();
+        return;
+      }
 
-    localStreamRef.current = stream;
-    setLocalStream(stream);
-    stream.getVideoTracks()[0]?.addEventListener("ended", stopShare, { once: true });
-    updateMe({ sharingSince: nextSharingSince() });
-    Object.keys(room.getPeers()).forEach((peerId) => sendScreen(room, stream, peerId));
-    if (stream.getAudioTracks().length === 0) {
-      showNotice("Compartilhando sem som. Pra mandar o áudio, marque a opção de áudio no seletor do navegador.");
-    }
-  }, [nextSharingSince, sendScreen, showNotice, stopShare, updateMe]);
+      localStreamRef.current = stream;
+      releaseRef.current = release;
+      setLocalStream(stream);
+      stream.getVideoTracks()[0]?.addEventListener("ended", stopShare, { once: true });
+      updateMe({ sharingSince: nextSharingSince() });
+      Object.keys(room.getPeers()).forEach((peerId) => sendScreen(room, stream, peerId));
+      if (stream.getAudioTracks().length === 0 && !selection) {
+        showNotice("Compartilhando sem som. Pra mandar o áudio, marque a opção de áudio no seletor do navegador.");
+      }
+    },
+    [nextSharingSince, sendScreen, showNotice, stopShare, updateMe],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -252,14 +274,13 @@ export function useRoom(roomId: string, name: string) {
     return () => {
       cancelled = true;
       clearTimeout(noticeTimer.current);
-      stopTracks(localStreamRef.current);
-      localStreamRef.current = null;
+      endCapture();
       void roomRef.current?.leave();
       roomRef.current = null;
       helloRef.current = null;
       qstatRef.current = null;
     };
-  }, [roomId, name, retuneSenders, sendScreen, showNotice, stopShare]);
+  }, [roomId, name, endCapture, retuneSenders, sendScreen, showNotice, stopShare]);
 
   const ranked = useMemo(() => {
     const others = Object.entries(peers).map(
@@ -277,11 +298,10 @@ export function useRoom(roomId: string, name: string) {
     room.onPeerJoin = null;
     room.onPeerLeave = null;
     room.onPeerStream = null;
-    stopTracks(localStreamRef.current);
-    localStreamRef.current = null;
+    endCapture();
     void room.leave();
     roomRef.current = null;
-  }, [isFull]);
+  }, [endCapture, isFull]);
 
   const participants = ranked.slice(0, MAX_PER_ROOM);
 

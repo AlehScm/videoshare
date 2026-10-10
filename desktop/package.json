@@ -1,0 +1,28 @@
+{
+  "name": "videoshare-desktop",
+  "productName": "videoshare",
+  "version": "0.1.0",
+  "description": "App de desktop do videoshare: compartilhe a tela com o som só do jogo.",
+  "author": "AlehScm",
+  "homepage": "https://alehscm.github.io/videoshare/",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win --publish never",
+    "release": "npm run build && electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "koffi": "^3.3.3",
+    "loopback-capture": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2"
+  }
+}

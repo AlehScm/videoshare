@@ -3,6 +3,7 @@
 import { ChevronDown, Maximize, ScreenShare, ScreenShareOff, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import type { Participant } from "@/hooks/useRoom";
+import { useIsDesktop, type DesktopSelection } from "@/lib/desktop";
 import {
   DEFAULT_PRESET,
   FRAME_RATES,
@@ -14,6 +15,7 @@ import {
 } from "@/lib/quality";
 import { dangerButtonClass, primaryButtonClass } from "@/lib/styles";
 import { ReplaceShareDialog } from "./ReplaceShareDialog";
+import { SourcePicker } from "./SourcePicker";
 
 const PRESETS: QualityPreset[] = RESOLUTIONS.flatMap((height) => FRAME_RATES.map((fps) => ({ height, fps })));
 
@@ -25,7 +27,7 @@ type Props = {
   disabled: boolean;
   preset: QualityPreset;
   onPresetChange: (preset: QualityPreset) => void;
-  onStart: () => void;
+  onStart: (selection?: DesktopSelection) => void;
   onStop: () => void;
   onFullscreen: () => void;
 };
@@ -71,10 +73,18 @@ export function ControlBar({
   onFullscreen,
 }: Props) {
   const [confirm, setConfirm] = useState({ open: false, presenterName: "" });
+  const [picking, setPicking] = useState(false);
+  const isDesktop = useIsDesktop();
+
+  // No app de desktop a fonte vem do seletor do videoshare; no navegador, do seletor do navegador.
+  function beginShare() {
+    if (isDesktop) setPicking(true);
+    else onStart();
+  }
 
   function handleShare() {
     if (presenter && !presenter.isSelf) setConfirm({ open: true, presenterName: presenter.name });
-    else onStart();
+    else beginShare();
   }
 
   function closeConfirm() {
@@ -123,9 +133,20 @@ export function ControlBar({
         onCancel={closeConfirm}
         onConfirm={() => {
           closeConfirm();
-          onStart();
+          beginShare();
         }}
       />
+
+      {isDesktop && (
+        <SourcePicker
+          open={picking}
+          onCancel={() => setPicking(false)}
+          onConfirm={(selection) => {
+            setPicking(false);
+            onStart(selection);
+          }}
+        />
+      )}
     </div>
   );
 }

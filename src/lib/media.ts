@@ -1,3 +1,4 @@
+import { createPcmAudioTrack, getDesktop, waitForAudioPort, type DesktopSelection } from "@/lib/desktop";
 import { presetBitrate, presetWidth, type QualityPreset } from "@/lib/quality";
 
 export function canShareScreen(): boolean {
@@ -18,23 +19,53 @@ function videoConstraints(preset: QualityPreset): MediaTrackConstraints {
   };
 }
 
-/** Abre o seletor de tela do navegador. `null` quando a pessoa cancela. */
-export async function captureScreen(preset: QualityPreset): Promise<MediaStream | null> {
-  const options: ScreenCaptureOptions = {
-    video: videoConstraints(preset),
-    audio: true,
-    systemAudio: "include",
-    // Ao escolher uma janela (ex.: um jogo), oferece só o som daquele programa, não o do sistema todo.
-    windowAudio: "window",
-  };
+export type CapturedScreen = { stream: MediaStream; release: () => void };
+
+/**
+ * Captura a tela. No navegador abre o seletor do próprio navegador; no app de desktop usa a fonte
+ * escolhida no seletor do videoshare e o som vem do Windows (só do programa, no caso de janela).
+ * `null` quando a pessoa cancela.
+ */
+export async function captureScreen(
+  preset: QualityPreset,
+  selection?: DesktopSelection,
+): Promise<CapturedScreen | null> {
+  const desktop = getDesktop();
+  const options: ScreenCaptureOptions =
+    desktop && selection
+      ? { video: videoConstraints(preset), audio: false }
+      : {
+          video: videoConstraints(preset),
+          audio: true,
+          systemAudio: "include",
+          // Ao escolher uma janela (ex.: um jogo), oferece só o som daquele programa, não o do sistema todo.
+          windowAudio: "window",
+        };
+  let stream: MediaStream;
   try {
-    const stream = await navigator.mediaDevices.getDisplayMedia(options);
-    for (const track of stream.getVideoTracks()) track.contentHint = "motion";
-    return stream;
+    if (desktop && selection) await desktop.selectSource(selection.sourceId);
+    stream = await navigator.mediaDevices.getDisplayMedia(options);
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotAllowedError") return null;
     throw error;
   }
+  for (const track of stream.getVideoTracks()) track.contentHint = "motion";
+
+  let release = () => {};
+  if (desktop && selection?.withAudio) {
+    const portArrived = waitForAudioPort();
+    const started = await desktop.startAudio(selection.sourceId).catch(() => false);
+    const port = started ? await portArrived : null;
+    if (port) {
+      const audio = await createPcmAudioTrack(port);
+      stream.addTrack(audio.track);
+      release = () => {
+        audio.close();
+        void desktop.stopAudio();
+      };
+    }
+  }
+  return { stream, release };
 }
 
 /** Troca a qualidade da captura no meio da transmissão. */

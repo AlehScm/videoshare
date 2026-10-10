@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // App de desktop (Electron) tem build e lint próprios.
+    "desktop/**",
   ]),
 ]);
 

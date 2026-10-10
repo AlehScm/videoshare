@@ -3,6 +3,7 @@
 Salas pra compartilhar a tela **sem backend próprio**. A pessoa escolhe um nome, cria uma sala e manda o link. Quem abrir o link entra na sala e assiste à tela de quem está apresentando.
 
 **No ar:** https://alehscm.github.io/videoshare/
+**App pra Windows:** https://github.com/AlehScm/videoshare/releases/latest
 
 ## Rodando
 
@@ -17,6 +18,27 @@ Para testar sozinho: abra o link da sala em duas abas (ou uma normal e uma anôn
 ## Deploy
 
 Todo push na `master` publica no GitHub Pages pelo workflow `.github/workflows/deploy.yml`. Ele roda o build com `NEXT_PUBLIC_BASE_PATH=/videoshare`, porque o Pages serve o site nesse subcaminho. Localmente a variável fica vazia e o site roda na raiz.
+
+## App de desktop (`desktop/`)
+
+App pra Windows em Electron. Ele abre o próprio site, então entra nas mesmas salas e a interface se atualiza junto com o site. Quem assiste pode continuar pelo link no navegador.
+
+- **Seletor de janelas e telas** do videoshare, com miniaturas, no lugar do seletor do navegador.
+- **Som só do programa:** ao compartilhar uma janela (ex.: um jogo), o áudio vem só daquele processo, por captura de áudio por processo do WASAPI (`loopback-capture`; a janela vira PID via `koffi`). Na tela inteira vai o som do computador menos o próprio videoshare. O PCM chega na página por `MessagePort` e vira trilha num `AudioWorklet` (`src/lib/desktop.ts`).
+- **Bandeja:** fechar a janela deixa o app perto do relógio. Pra sair: botão direito no ícone → Sair.
+- **Atualização automática:** `electron-updater` busca versão nova no GitHub Releases.
+
+```bash
+cd desktop
+npm install
+npm start                                   # abre o app apontando pro site no ar
+VIDEOSHARE_URL=http://localhost:3000/ npm start   # apontando pro site local
+npm run dist                                # gera o instalador em desktop/release/
+```
+
+**Publicar versão nova:** suba o `version` em `desktop/package.json`, faça commit e crie a tag igual (`git tag v0.2.0 && git push --tags`). O workflow `.github/workflows/desktop.yml` gera o instalador e publica o Release, e os apps instalados se atualizam sozinhos.
+
+O instalador não tem assinatura digital. Na primeira vez o Windows mostra "O Windows protegeu o computador": clique em "Mais informações" e depois em "Executar assim mesmo".
 
 ## Como funciona
 
@@ -34,7 +56,8 @@ Todo push na `master` publica no GitHub Pages pelo workflow `.github/workflows/d
 - **Ícone de qualidade** (`src/hooks/useStreamStats.ts`, `QualityIndicator.tsx`): no canto do palco. Lê o `getStats()` a cada segundo e mostra:
   - **Pra quem assiste:** resolução, fps, taxa recebida, perda, ping, travadas e codec.
   - **Pra quem apresenta:** o envio pra cada pessoa.
-  - **O problema em português:** internet de envio sem dar conta da qualidade escolhida, computador sobrecarregado, perda de pacotes, ping alto, travadas. A falta de banda é detectada comparando os quadros enviados com os capturados, pra não acusar tela parada. Quem apresenta avisa os outros (action `qstat`, com a qualidade escolhida), então quem assiste sabe se o problema é do lado de lá ou do seu.
+  - **O problema em português:** internet de envio sem dar conta da qualidade escolhida, computador sobrecarregado, perda de pacotes, ping alto, travadas. A falta de banda é detectada comparando os quadros enviados com os capturados, pra não acusar tela parada. Quem apresenta avisa os outros (action `qstat`, com a qualidade escolhida e os fps capturados), então quem assiste sabe se o problema é do lado de lá ou do seu.
+  - **Sem falso alarme:** poucos fps, travadas e "sem imagem" só contam quando a tela de quem apresenta está se mexendo. A perda é medida numa janela de 5 s. Cada problema só aparece depois de 3 medições seguidas e só some depois de 3 boas.
 
 ```
 src/
@@ -46,7 +69,13 @@ src/
   hooks/useStreamStats.ts       estatísticas WebRTC e diagnóstico do ícone de qualidade
   lib/media.ts                  captura de tela e ajuste do envio (resolução, fps, bitrate)
   lib/quality.ts                opções de qualidade (480p a 1080p, 30/60 fps) e taxas
+  lib/desktop.ts                ponte com o app de desktop e trilha de áudio vinda do Windows
+  components/room/SourcePicker.tsx  seletor de janelas/telas (só no app)
   lib/                          id de sala, nome salvo, classes de estilo
+desktop/
+  src/main.ts                   janela, bandeja, permissões, atualização automática
+  src/capture.ts                lista de fontes, janela → PID, captura de áudio por processo
+  src/preload.ts                window.videoshareDesktop (contextBridge)
 ```
 
 ## Limitações (por não ter servidor)
@@ -58,6 +87,10 @@ src/
 - **Áudio da tela**: só vai quando o navegador mostra a opção de áudio no seletor.
   - **Aba:** manda só o som da aba.
   - **Tela inteira (Windows):** manda o som do sistema todo.
-  - **Janela, como um jogo:** o site pede só o som daquele programa (`windowAudio: "window"`, Chrome 141+). Se o navegador não oferecer essa opção, a janela vai sem som.
+  - **Janela, como um jogo:** o site pede só o som daquele programa (`windowAudio: "window"`, Chrome 141+). Se o navegador não oferecer essa opção, a janela vai sem som. No app de desktop isso não depende do navegador.
+- **App de desktop:**
+  - **Windows:** só Windows 10 2004+ ou 11, x64.
+  - **Jogos protegidos:** jogos com anti-cheat ou rodando como administrador podem bloquear a captura de áudio por processo. Nesse caso, use a tela inteira.
+  - **Sincronia:** o som pode ficar ~50–150 ms fora de sincronia com a imagem.
 - **"Sala cheia" é best-effort**: sem autoridade central, a ordem de chegada usa o relógio de cada aparelho. Entradas simultâneas podem passar do limite por alguns segundos.
 - **Código da sala = acesso**: quem tiver o link entra. Não há senha (o Trystero aceita `password` no `joinRoom` se precisar).

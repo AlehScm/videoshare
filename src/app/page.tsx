@@ -1,3 +1,4 @@
+import { DesktopDownloadLink } from "@/components/DesktopDownloadLink";
 import { HomeForm } from "@/components/HomeForm";
 
 export default function Home() {
@@ -13,6 +14,7 @@ export default function Home() {
       <p className="text-sm text-muted">
         A tela vai direto do seu navegador pro de quem está assistindo. Nada passa por servidor.
       </p>
+      <DesktopDownloadLink />
     </main>
   );
 }

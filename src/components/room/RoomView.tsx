@@ -81,7 +81,7 @@ export function RoomView({ roomId, name }: { roomId: string; name: string }) {
             disabled={connecting}
             preset={room.preset}
             onPresetChange={room.changePreset}
-            onStart={() => void room.startShare()}
+            onStart={(selection) => void room.startShare(selection)}
             onStop={room.stopShare}
             onFullscreen={() => void stageRef.current?.requestFullscreen().catch(() => {})}
           />
