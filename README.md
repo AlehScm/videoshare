@@ -43,6 +43,9 @@ src/
 - **Redes restritas**: em NAT simétrico ou rede corporativa o WebRTC direto pode falhar. A solução é configurar um servidor TURN (`turnConfig` no `joinRoom`).
 - **Upload de quem apresenta**: a tela é enviada separadamente pra cada pessoa (até 5). Com upload fraco a qualidade cai.
 - **Celular**: dá pra assistir, mas não compartilhar. Os navegadores de celular não oferecem `getDisplayMedia`.
-- **Áudio da tela**: só quando o Chrome mostra a opção "compartilhar áudio" (aba, ou tela inteira no Windows). Janela avulsa vai sem som.
+- **Áudio da tela**: só vai quando o navegador mostra a opção de áudio no seletor.
+  - **Aba:** manda só o som da aba.
+  - **Tela inteira (Windows):** manda o som do sistema todo.
+  - **Janela, como um jogo:** o site pede só o som daquele programa (`windowAudio: "window"`, Chrome 141+). Se o navegador não oferecer essa opção, a janela vai sem som.
 - **"Sala cheia" é best-effort**: sem autoridade central, a ordem de chegada usa o relógio de cada aparelho. Entradas simultâneas podem passar do limite por alguns segundos.
 - **Código da sala = acesso**: quem tiver o link entra. Não há senha (o Trystero aceita `password` no `joinRoom` se precisar).

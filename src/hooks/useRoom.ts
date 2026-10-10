@@ -114,6 +114,9 @@ export function useRoom(roomId: string, name: string) {
     stream.getVideoTracks()[0]?.addEventListener("ended", stopShare, { once: true });
     updateMe({ sharingSince: Date.now() });
     void Promise.allSettled(room.addStream(stream));
+    if (stream.getAudioTracks().length === 0) {
+      showNotice("Compartilhando sem som. Pra mandar o áudio, marque a opção de áudio no seletor do navegador.");
+    }
   }, [sharingPeer, showNotice, stopShare, updateMe]);
 
   useEffect(() => {
