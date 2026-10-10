@@ -1,6 +1,6 @@
 # videoshare
 
-Salas de presença em tempo real **sem backend próprio**. A pessoa escolhe um nome, cria uma sala e manda o link. Quem abrir o link aparece na lista de todos na hora, e some quando fecha a aba.
+Salas pra compartilhar a tela **sem backend próprio**. A pessoa escolhe um nome, cria uma sala e manda o link. Quem abrir o link entra na sala e assiste à tela de quem está apresentando.
 
 **No ar:** https://alehscm.github.io/videoshare/
 
@@ -20,28 +20,29 @@ Todo push na `master` publica no GitHub Pages pelo workflow `.github/workflows/d
 
 ## Como funciona
 
-- **Next.js com `output: "export"`**: o build é só HTML/CSS/JS e pode ser hospedado em qualquer lugar (Vercel, Netlify, Cloudflare Pages, GitHub Pages, nginx…).
-- **[Trystero](https://github.com/dmotz/trystero)**: os navegadores se encontram por relays públicos do Nostr (só pra trocar o "aperto de mão" do WebRTC) e depois conversam direto, P2P. Nenhum dado da sala passa por servidor nosso.
-- Cada participante manda `{ name, joinedAt }` aos outros quando a conexão abre. A lista é ordenada por ordem de chegada.
-- **Limite de 6 por sala** (`MAX_PER_ROOM` em `src/hooks/useRoomPresence.ts`): quem chega além do limite vê "sala cheia" e sai sozinho, e os outros nem chegam a exibi-lo.
+- **Next.js com `output: "export"`**: o build é só HTML/CSS/JS e pode ser hospedado em qualquer lugar.
+- **[Trystero](https://github.com/dmotz/trystero)**: os navegadores se encontram por relays públicos do Nostr (só pra trocar o "aperto de mão" do WebRTC). Depois a presença e a tela vão direto de um navegador pro outro, P2P.
+- **Presença**: cada participante manda `{ name, joinedAt, sharingSince }` ao conectar e de novo quando começa ou para de compartilhar.
+- **Limite de 6 por sala** (`MAX_PER_ROOM` em `src/hooks/useRoom.ts`): quem chega além do limite vê "sala cheia" e sai sozinho.
+- **Compartilhar tela**: qualquer pessoa, uma por vez. Quem apresenta envia o stream do `getDisplayMedia` (com o áudio da aba ou do sistema, quando o navegador oferece) pra cada participante, inclusive pra quem entra depois. Se duas pessoas começarem ao mesmo tempo, fica quem começou primeiro.
 
 ```
 src/
-  app/page.tsx              home: nome + criar sala / entrar com código
-  app/sala/page.tsx         /sala?id=<código>
-  components/RoomGate.tsx   valida o id e pede o nome se faltar
-  components/RoomView.tsx   lista de presentes, copiar link, sair
-  hooks/useRoomPresence.ts  toda a lógica P2P (Trystero)
-  lib/                      id de sala, nome salvo, classes de estilo
+  app/page.tsx                  home: nome + criar sala / entrar com código
+  app/sala/page.tsx             /sala?id=<código>
+  components/RoomGate.tsx       valida o id e pede o nome se faltar
+  components/room/RoomView.tsx  sala: barra do topo, palco, controles, participantes
+  hooks/useRoom.ts              toda a lógica P2P: presença e compartilhamento (Trystero)
+  lib/media.ts                  captura de tela (getDisplayMedia)
+  lib/                          id de sala, nome salvo, classes de estilo
 ```
 
 ## Limitações (por não ter servidor)
 
 - **Relays de terceiros**: a descoberta depende dos relays públicos do Nostr. O Trystero usa vários ao mesmo tempo, mas eles não são nossos.
 - **Redes restritas**: em NAT simétrico ou rede corporativa o WebRTC direto pode falhar. A solução é configurar um servidor TURN (`turnConfig` no `joinRoom`).
-- **"Sala cheia" é best-effort**: sem autoridade central, a ordem de chegada usa o relógio de cada aparelho. Relógios muito fora de hora ou entradas simultâneas podem passar do limite por alguns segundos.
+- **Upload de quem apresenta**: a tela é enviada separadamente pra cada pessoa (até 5). Com upload fraco a qualidade cai.
+- **Celular**: dá pra assistir, mas não compartilhar. Os navegadores de celular não oferecem `getDisplayMedia`.
+- **Áudio da tela**: só quando o Chrome mostra a opção "compartilhar áudio" (aba, ou tela inteira no Windows). Janela avulsa vai sem som.
+- **"Sala cheia" é best-effort**: sem autoridade central, a ordem de chegada usa o relógio de cada aparelho. Entradas simultâneas podem passar do limite por alguns segundos.
 - **Código da sala = acesso**: quem tiver o link entra. Não há senha (o Trystero aceita `password` no `joinRoom` se precisar).
-
-## Próximos passos possíveis
-
-Vídeo/áudio (`room.addStream`), chat, deploy na Vercel, servidor TURN.

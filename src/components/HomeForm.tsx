@@ -47,10 +47,10 @@ export function HomeForm() {
         Criar sala nova
       </button>
 
-      <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-zinc-500">
-        <span className="h-px flex-1 bg-black/10 dark:bg-white/10" />
+      <div className="flex items-center gap-3 text-sm text-muted">
+        <span className="h-px flex-1 bg-line" />
         ou entre numa sala
-        <span className="h-px flex-1 bg-black/10 dark:bg-white/10" />
+        <span className="h-px flex-1 bg-line" />
       </div>
 
       <form
