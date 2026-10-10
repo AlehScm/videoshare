@@ -23,3 +23,8 @@ export function parseRoomInput(input: string): string | null {
 export function roomHref(id: string): string {
   return `/sala?id=${encodeURIComponent(id)}`;
 }
+
+export function roomShareUrl(id: string): string {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  return `${window.location.origin}${basePath}${roomHref(id)}`;
+}

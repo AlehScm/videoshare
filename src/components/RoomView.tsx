@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { MAX_PER_ROOM, useRoomPresence, type Participant } from "@/hooks/useRoomPresence";
 import { saveName } from "@/lib/name-storage";
-import { roomHref } from "@/lib/room-id";
+import { roomShareUrl } from "@/lib/room-id";
 import { cardClass, inputClass, primaryButtonClass, secondaryButtonClass } from "@/lib/styles";
 
 const AVATAR_COLORS = [
@@ -45,7 +45,7 @@ function ParticipantRow({ participant }: { participant: Participant }) {
 
 function ShareLink({ roomId }: { roomId: string }) {
   const [copied, setCopied] = useState(false);
-  const link = `${window.location.origin}${roomHref(roomId)}`;
+  const link = roomShareUrl(roomId);
 
   async function copy() {
     try {

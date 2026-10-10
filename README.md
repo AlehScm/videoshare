@@ -2,6 +2,8 @@
 
 Salas de presença em tempo real **sem backend próprio**. A pessoa escolhe um nome, cria uma sala e manda o link. Quem abrir o link aparece na lista de todos na hora, e some quando fecha a aba.
 
+**No ar:** https://alehscm.github.io/videoshare/
+
 ## Rodando
 
 ```bash
@@ -11,6 +13,10 @@ npm run build    # gera site 100% estático em out/
 ```
 
 Para testar sozinho: abra o link da sala em duas abas (ou uma normal e uma anônima). Em cada aba dá pra usar um nome diferente.
+
+## Deploy
+
+Todo push na `master` publica no GitHub Pages pelo workflow `.github/workflows/deploy.yml`. Ele roda o build com `NEXT_PUBLIC_BASE_PATH=/videoshare`, porque o Pages serve o site nesse subcaminho. Localmente a variável fica vazia e o site roda na raiz.
 
 ## Como funciona
 
