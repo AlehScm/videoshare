@@ -14,8 +14,9 @@ type Hello = { name: string; joinedAt: number; sharingSince: number | null };
 
 export type Limitation = "none" | "cpu" | "bandwidth" | "other";
 /** O que quem apresenta conta pros outros sobre o próprio envio (ver useStreamStats). */
-export type QualityStatus = { limitation: Limitation; viewers: number; preset: string };
-export type PresenterQuality = { limitation: Limitation; viewers: number; preset: QualityPreset } & {
+export type QualityStatus = { limitation: Limitation; viewers: number; sourceFps: number; preset: string };
+export type PresenterQuality = Omit<QualityStatus, "preset"> & {
+  preset: QualityPreset;
   peerId: string;
   at: number;
 };
@@ -24,12 +25,17 @@ const LIMITATIONS: readonly Limitation[] = ["none", "cpu", "bandwidth", "other"]
 
 function parseQualityStatus(data: unknown): Omit<PresenterQuality, "peerId" | "at"> | null {
   if (typeof data !== "object" || data === null) return null;
-  const { limitation, viewers, preset } = data as Record<string, unknown>;
+  const { limitation, viewers, sourceFps, preset } = data as Record<string, unknown>;
   const parsedPreset = parsePreset(preset);
   if (!LIMITATIONS.includes(limitation as Limitation) || typeof viewers !== "number" || !parsedPreset) {
     return null;
   }
-  return { limitation: limitation as Limitation, viewers, preset: parsedPreset };
+  return {
+    limitation: limitation as Limitation,
+    viewers,
+    sourceFps: typeof sourceFps === "number" ? sourceFps : 0,
+    preset: parsedPreset,
+  };
 }
 
 export type Participant = Hello & { id: string; isSelf: boolean };
