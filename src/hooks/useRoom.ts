@@ -35,16 +35,16 @@ function byArrival(a: Participant, b: Participant): number {
   return a.joinedAt - b.joinedAt || a.id.localeCompare(b.id);
 }
 
-/** `true` se `a` começou a compartilhar antes de `b` (empate decidido pelo id). */
-function sharedFirst(a: { id: string; since: number }, b: { id: string; since: number }): boolean {
-  return a.since < b.since || (a.since === b.since && a.id < b.id);
+/** `true` se `a` começou a compartilhar depois de `b` (empate decidido pelo id). */
+function sharedLater(a: { id: string; since: number }, b: { id: string; since: number }): boolean {
+  return a.since > b.since || (a.since === b.since && a.id > b.id);
 }
 
 /**
  * Sala P2P via Trystero (descoberta por relays Nostr públicos, dados e mídia via WebRTC).
  * - Presença: cada peer manda `Hello` ao conectar e de novo quando começa/para de compartilhar.
  * - Limite: ordem de chegada decide quem fica; quem passa de MAX_PER_ROOM sai sozinho.
- * - Tela: uma por vez; se dois começarem juntos, fica quem começou primeiro.
+ * - Tela: uma por vez; quem começa a compartilhar substitui quem estava apresentando.
  */
 export function useRoom(roomId: string, name: string) {
   const roomRef = useRef<Room | null>(null);
@@ -85,8 +85,10 @@ export function useRoom(roomId: string, name: string) {
     updateMe({ sharingSince: null });
   }, [updateMe]);
 
-  const sharingPeer = useCallback(() => {
-    return Object.entries(peersRef.current).find(([, hello]) => hello.sharingSince !== null);
+  // Garante que o novo compartilhamento fique "depois" do atual mesmo com relógios desalinhados.
+  const nextSharingSince = useCallback(() => {
+    const known = Object.values(peersRef.current).map((hello) => hello.sharingSince ?? 0);
+    return Math.max(Date.now(), ...known.map((since) => since + 1));
   }, []);
 
   const startShare = useCallback(async () => {
@@ -102,22 +104,20 @@ export function useRoom(roomId: string, name: string) {
     if (!stream) return;
 
     const room = roomRef.current;
-    const other = sharingPeer();
-    if (!room || other) {
+    if (!room) {
       stopTracks(stream);
-      if (other) showNotice(`${other[1].name} já está compartilhando a tela.`);
       return;
     }
 
     localStreamRef.current = stream;
     setLocalStream(stream);
     stream.getVideoTracks()[0]?.addEventListener("ended", stopShare, { once: true });
-    updateMe({ sharingSince: Date.now() });
+    updateMe({ sharingSince: nextSharingSince() });
     void Promise.allSettled(room.addStream(stream));
     if (stream.getAudioTracks().length === 0) {
       showNotice("Compartilhando sem som. Pra mandar o áudio, marque a opção de áudio no seletor do navegador.");
     }
-  }, [sharingPeer, showNotice, stopShare, updateMe]);
+  }, [nextSharingSince, showNotice, stopShare, updateMe]);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,10 +144,10 @@ export function useRoom(roomId: string, name: string) {
           const mine = meRef.current.sharingSince;
           if (
             mine !== null &&
-            sharedFirst({ id: peerId, since: parsed.sharingSince }, { id: selfIdRef.current, since: mine })
+            sharedLater({ id: peerId, since: parsed.sharingSince }, { id: selfIdRef.current, since: mine })
           ) {
             stopShare();
-            showNotice(`${parsed.name} começou a compartilhar antes de você.`);
+            showNotice(`${parsed.name} começou a compartilhar e substituiu a sua tela.`);
           }
         };
         room.onPeerJoin = (peerId) => {
@@ -216,7 +216,7 @@ export function useRoom(roomId: string, name: string) {
     participants
       .filter((p) => p.sharingSince !== null)
       .sort((a, b) =>
-        sharedFirst({ id: a.id, since: a.sharingSince! }, { id: b.id, since: b.sharingSince! }) ? -1 : 1,
+        sharedLater({ id: a.id, since: a.sharingSince! }, { id: b.id, since: b.sharingSince! }) ? -1 : 1,
       )[0] ?? null;
 
   const presenterStream = presenter

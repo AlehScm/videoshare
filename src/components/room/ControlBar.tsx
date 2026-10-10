@@ -1,8 +1,10 @@
 "use client";
 
 import { Maximize, ScreenShare, ScreenShareOff } from "lucide-react";
+import { useState } from "react";
 import type { Participant } from "@/hooks/useRoom";
 import { dangerButtonClass, primaryButtonClass } from "@/lib/styles";
+import { ReplaceShareDialog } from "./ReplaceShareDialog";
 
 type Props = {
   canShare: boolean;
@@ -25,7 +27,16 @@ export function ControlBar({
   onStop,
   onFullscreen,
 }: Props) {
-  const blockedBy = presenter && !presenter.isSelf ? presenter.name : null;
+  const [confirm, setConfirm] = useState({ open: false, presenterName: "" });
+
+  function handleShare() {
+    if (presenter && !presenter.isSelf) setConfirm({ open: true, presenterName: presenter.name });
+    else onStart();
+  }
+
+  function closeConfirm() {
+    setConfirm((prev) => ({ ...prev, open: false }));
+  }
 
   return (
     <div className="flex flex-wrap items-center justify-center gap-3">
@@ -41,9 +52,8 @@ export function ControlBar({
       ) : (
         <button
           type="button"
-          onClick={onStart}
-          disabled={disabled || blockedBy !== null}
-          title={blockedBy ? `${blockedBy} está apresentando. Espere terminar pra compartilhar.` : undefined}
+          onClick={handleShare}
+          disabled={disabled}
           className={`${primaryButtonClass} rounded-full`}
         >
           <ScreenShare className="size-5" aria-hidden />
@@ -61,6 +71,16 @@ export function ControlBar({
       >
         <Maximize className="size-5" aria-hidden />
       </button>
+
+      <ReplaceShareDialog
+        open={confirm.open}
+        presenterName={confirm.presenterName}
+        onCancel={closeConfirm}
+        onConfirm={() => {
+          closeConfirm();
+          onStart();
+        }}
+      />
     </div>
   );
 }
