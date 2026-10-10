@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# videoshare
 
-## Getting Started
+Salas de presença em tempo real **sem backend próprio**. A pessoa escolhe um nome, cria uma sala e manda o link. Quem abrir o link aparece na lista de todos na hora, e some quando fecha a aba.
 
-First, run the development server:
+## Rodando
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev      # http://localhost:3000
+npm run build    # gera site 100% estático em out/
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Para testar sozinho: abra o link da sala em duas abas (ou uma normal e uma anônima). Em cada aba dá pra usar um nome diferente.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Como funciona
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- **Next.js com `output: "export"`**: o build é só HTML/CSS/JS e pode ser hospedado em qualquer lugar (Vercel, Netlify, Cloudflare Pages, GitHub Pages, nginx…).
+- **[Trystero](https://github.com/dmotz/trystero)**: os navegadores se encontram por relays públicos do Nostr (só pra trocar o "aperto de mão" do WebRTC) e depois conversam direto, P2P. Nenhum dado da sala passa por servidor nosso.
+- Cada participante manda `{ name, joinedAt }` aos outros quando a conexão abre. A lista é ordenada por ordem de chegada.
+- **Limite de 6 por sala** (`MAX_PER_ROOM` em `src/hooks/useRoomPresence.ts`): quem chega além do limite vê "sala cheia" e sai sozinho, e os outros nem chegam a exibi-lo.
 
-## Learn More
+```
+src/
+  app/page.tsx              home: nome + criar sala / entrar com código
+  app/sala/page.tsx         /sala?id=<código>
+  components/RoomGate.tsx   valida o id e pede o nome se faltar
+  components/RoomView.tsx   lista de presentes, copiar link, sair
+  hooks/useRoomPresence.ts  toda a lógica P2P (Trystero)
+  lib/                      id de sala, nome salvo, classes de estilo
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Limitações (por não ter servidor)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- **Relays de terceiros**: a descoberta depende dos relays públicos do Nostr. O Trystero usa vários ao mesmo tempo, mas eles não são nossos.
+- **Redes restritas**: em NAT simétrico ou rede corporativa o WebRTC direto pode falhar. A solução é configurar um servidor TURN (`turnConfig` no `joinRoom`).
+- **"Sala cheia" é best-effort**: sem autoridade central, a ordem de chegada usa o relógio de cada aparelho. Relógios muito fora de hora ou entradas simultâneas podem passar do limite por alguns segundos.
+- **Código da sala = acesso**: quem tiver o link entra. Não há senha (o Trystero aceita `password` no `joinRoom` se precisar).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Próximos passos possíveis
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Vídeo/áudio (`room.addStream`), chat, deploy na Vercel, servidor TURN.
