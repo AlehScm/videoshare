@@ -25,6 +25,7 @@ Todo push na `master` publica no GitHub Pages pelo workflow `.github/workflows/d
 - **Presença**: cada participante manda `{ name, joinedAt, sharingSince }` ao conectar e de novo quando começa ou para de compartilhar.
 - **Limite de 6 por sala** (`MAX_PER_ROOM` em `src/hooks/useRoom.ts`): quem chega além do limite vê "sala cheia" e sai sozinho.
 - **Compartilhar tela**: qualquer pessoa, uma por vez. Quem apresenta envia o stream do `getDisplayMedia` (com o áudio da aba ou do sistema, quando o navegador oferece) pra cada participante, inclusive pra quem entra depois. Se outra pessoa clicar em compartilhar enquanto alguém apresenta, aparece uma confirmação e a tela dela substitui a atual: vence quem começou por último.
+- **Volume**: cada pessoa que assiste ajusta o volume (ou silencia) a tela compartilhada só no próprio computador, pelo controle no canto do palco. O valor fica salvo no navegador.
 
 ```
 src/
