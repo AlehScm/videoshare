@@ -90,7 +90,10 @@ desktop/
   - **Janela, como um jogo:** o site pede só o som daquele programa (`windowAudio: "window"`, Chrome 141+). Se o navegador não oferecer essa opção, a janela vai sem som. No app de desktop isso não depende do navegador.
 - **App de desktop:**
   - **Windows:** só Windows 10 2004+ ou 11, x64.
-  - **Jogos protegidos:** jogos com anti-cheat ou rodando como administrador podem bloquear a captura de áudio por processo. Nesse caso, use a tela inteira.
+  - **Anti-cheat:** a captura não injeta nada no jogo. O vídeo vem do Windows Graphics Capture e o áudio da captura por processo do WASAPI, ambos APIs oficiais do Windows, então o anti-cheat não tem o que bloquear.
+  - **Tela cheia exclusiva:** jogos em tela cheia exclusiva aparecem pretos na captura de janela. Use o modo "janela sem bordas" do jogo ou compartilhe a tela inteira.
+  - **Janela que bloqueia captura:** programas que marcam a janela como não capturável (`WDA_EXCLUDEFROMCAPTURE`) aparecem pretos, como no Discord sem injeção.
+  - **Jogo como administrador:** se o jogo roda como administrador e a captura falhar, abra o videoshare como administrador também.
   - **Sincronia:** o som pode ficar ~50–150 ms fora de sincronia com a imagem.
 - **"Sala cheia" é best-effort**: sem autoridade central, a ordem de chegada usa o relógio de cada aparelho. Entradas simultâneas podem passar do limite por alguns segundos.
 - **Código da sala = acesso**: quem tiver o link entra. Não há senha (o Trystero aceita `password` no `joinRoom` se precisar).
