@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageAction, Room } from "trystero";
-import { captureScreen, stopTracks } from "@/lib/media";
+import {
+  captureScreen,
+  preferHardwareCodec,
+  stopTracks,
+  tuneVideoSender,
+  videoBitrateFor,
+} from "@/lib/media";
 import { MAX_NAME_LENGTH } from "@/lib/name-storage";
 
 export const MAX_PER_ROOM = 6;
@@ -10,6 +16,20 @@ const APP_ID = "videoshare-acm-presenca";
 const NOTICE_MS = 5000;
 
 type Hello = { name: string; joinedAt: number; sharingSince: number | null };
+
+export type Limitation = "none" | "cpu" | "bandwidth" | "other";
+/** O que quem apresenta conta pros outros sobre o próprio envio (ver useStreamStats). */
+export type QualityStatus = { limitation: Limitation; viewers: number };
+export type PresenterQuality = QualityStatus & { peerId: string; at: number };
+
+const LIMITATIONS: readonly Limitation[] = ["none", "cpu", "bandwidth", "other"];
+
+function parseQualityStatus(data: unknown): QualityStatus | null {
+  if (typeof data !== "object" || data === null) return null;
+  const { limitation, viewers } = data as Record<string, unknown>;
+  if (!LIMITATIONS.includes(limitation as Limitation) || typeof viewers !== "number") return null;
+  return { limitation: limitation as Limitation, viewers };
+}
 
 export type Participant = Hello & { id: string; isSelf: boolean };
 
@@ -49,6 +69,7 @@ function sharedLater(a: { id: string; since: number }, b: { id: string; since: n
 export function useRoom(roomId: string, name: string) {
   const roomRef = useRef<Room | null>(null);
   const helloRef = useRef<MessageAction<Hello> | null>(null);
+  const qstatRef = useRef<MessageAction<QualityStatus> | null>(null);
   const meRef = useRef<Hello>({ name, joinedAt: 0, sharingSince: null });
   const selfIdRef = useRef("");
   const peersRef = useRef<Record<string, Hello>>({});
@@ -62,6 +83,7 @@ export function useRoom(roomId: string, name: string) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [failed, setFailed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [presenterQuality, setPresenterQuality] = useState<PresenterQuality | null>(null);
 
   const showNotice = useCallback((message: string) => {
     clearTimeout(noticeTimer.current);
@@ -84,6 +106,41 @@ export function useRoom(roomId: string, name: string) {
     setLocalStream(null);
     updateMe({ sharingSince: null });
   }, [updateMe]);
+
+  /** Divide o upload entre quem assiste: recalcula o teto de bitrate de todas as conexões. */
+  const retuneSenders = useCallback(() => {
+    const room = roomRef.current;
+    const track = localStreamRef.current?.getVideoTracks()[0];
+    if (!room || !track) return;
+    const connections = Object.values(room.getPeers());
+    const maxBitrate = videoBitrateFor(connections.length);
+    connections.forEach((pc) => void tuneVideoSender(pc, track, maxBitrate));
+  }, []);
+
+  /**
+   * Envia a tela pra uma pessoa. O Trystero só faz o addTrack depois de um await interno;
+   * o `.then` roda antes da renegociação, a tempo de trocar o codec pra H.264.
+   */
+  const sendScreen = useCallback(
+    (room: Room, stream: MediaStream, peerId: string) => {
+      const track = stream.getVideoTracks()[0];
+      const [sent] = room.addStream(stream, { target: peerId });
+      void sent
+        ?.then(() => {
+          const pc = room.getPeers()[peerId];
+          if (pc && track) preferHardwareCodec(pc, track);
+          retuneSenders();
+        })
+        .catch(() => {});
+    },
+    [retuneSenders],
+  );
+
+  const getConnections = useCallback(() => roomRef.current?.getPeers() ?? {}, []);
+
+  const sendQualityStatus = useCallback((status: QualityStatus) => {
+    void qstatRef.current?.send(status).catch(() => {});
+  }, []);
 
   // Garante que o novo compartilhamento fique "depois" do atual mesmo com relógios desalinhados.
   const nextSharingSince = useCallback(() => {
@@ -113,11 +170,11 @@ export function useRoom(roomId: string, name: string) {
     setLocalStream(stream);
     stream.getVideoTracks()[0]?.addEventListener("ended", stopShare, { once: true });
     updateMe({ sharingSince: nextSharingSince() });
-    void Promise.allSettled(room.addStream(stream));
+    Object.keys(room.getPeers()).forEach((peerId) => sendScreen(room, stream, peerId));
     if (stream.getAudioTracks().length === 0) {
       showNotice("Compartilhando sem som. Pra mandar o áudio, marque a opção de áudio no seletor do navegador.");
     }
-  }, [nextSharingSince, showNotice, stopShare, updateMe]);
+  }, [nextSharingSince, sendScreen, showNotice, stopShare, updateMe]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,7 +188,12 @@ export function useRoom(roomId: string, name: string) {
           onJoinError: () => setFailed(true),
         });
         const hello = room.makeAction<Hello>("hello");
+        const qstat = room.makeAction<QualityStatus>("qstat");
 
+        qstat.onMessage = (data, { peerId }) => {
+          const parsed = parseQualityStatus(data);
+          if (parsed) setPresenterQuality({ ...parsed, peerId, at: Date.now() });
+        };
         hello.onMessage = (data, { peerId }) => {
           const parsed = parseHello(data);
           if (!parsed) return;
@@ -153,12 +215,13 @@ export function useRoom(roomId: string, name: string) {
         room.onPeerJoin = (peerId) => {
           void hello.send(meRef.current, { target: peerId });
           const stream = localStreamRef.current;
-          if (stream) void Promise.allSettled(room.addStream(stream, { target: peerId }));
+          if (stream) sendScreen(room, stream, peerId);
         };
         room.onPeerLeave = (peerId) => {
           peersRef.current = without(peersRef.current, peerId);
           setPeers(peersRef.current);
           setStreams((prev) => without(prev, peerId));
+          retuneSenders();
         };
         room.onPeerStream = (stream, peerId) => {
           setStreams((prev) => ({ ...prev, [peerId]: stream }));
@@ -166,6 +229,7 @@ export function useRoom(roomId: string, name: string) {
 
         roomRef.current = room;
         helloRef.current = hello;
+        qstatRef.current = qstat;
         selfIdRef.current = selfId;
         setPeers({});
         setStreams({});
@@ -185,8 +249,9 @@ export function useRoom(roomId: string, name: string) {
       void roomRef.current?.leave();
       roomRef.current = null;
       helloRef.current = null;
+      qstatRef.current = null;
     };
-  }, [roomId, name, showNotice, stopShare]);
+  }, [roomId, name, retuneSenders, sendScreen, showNotice, stopShare]);
 
   const ranked = useMemo(() => {
     const others = Object.entries(peers).map(
@@ -240,7 +305,10 @@ export function useRoom(roomId: string, name: string) {
     presenterStream,
     isSharing: localStream !== null,
     notice,
+    presenterQuality,
     startShare,
     stopShare,
+    getConnections,
+    sendQualityStatus,
   };
 }

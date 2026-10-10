@@ -3,6 +3,8 @@
 import { ScreenShare } from "lucide-react";
 import type { Ref } from "react";
 import type { Participant } from "@/hooks/useRoom";
+import type { QualityReport } from "@/hooks/useStreamStats";
+import { QualityIndicator } from "./QualityIndicator";
 import { StageVideo } from "./StageVideo";
 
 type Props = {
@@ -11,6 +13,7 @@ type Props = {
   alone: boolean;
   presenter: Participant | null;
   presenterStream: MediaStream | null;
+  quality: QualityReport | null;
 };
 
 function EmptyState({ title, body }: { title: string; body: string }) {
@@ -25,7 +28,7 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
-export function Stage({ ref, connecting, alone, presenter, presenterStream }: Props) {
+export function Stage({ ref, connecting, alone, presenter, presenterStream, quality }: Props) {
   const live = presenter !== null;
 
   return (
@@ -65,6 +68,12 @@ export function Stage({ ref, connecting, alone, presenter, presenterStream }: Pr
             <span className="relative inline-flex size-2.5 rounded-full bg-tally" />
           </span>
           {presenter.isSelf ? "Você está apresentando" : `${presenter.name} está apresentando`}
+        </div>
+      )}
+
+      {presenter && presenterStream && (
+        <div className="absolute right-3 top-3">
+          <QualityIndicator report={quality} />
         </div>
       )}
     </div>

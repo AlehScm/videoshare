@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRef } from "react";
 import { CenteredShell } from "@/components/CenteredShell";
 import { MAX_PER_ROOM, useRoom } from "@/hooks/useRoom";
+import { useStreamStats } from "@/hooks/useStreamStats";
 import { canShareScreen } from "@/lib/media";
 import { cardClass, primaryButtonClass } from "@/lib/styles";
 import { ControlBar } from "./ControlBar";
@@ -15,6 +16,14 @@ import { TopBar } from "./TopBar";
 export function RoomView({ roomId, name }: { roomId: string; name: string }) {
   const room = useRoom(roomId, name);
   const stageRef = useRef<HTMLDivElement>(null);
+  const quality = useStreamStats({
+    getConnections: room.getConnections,
+    presenter: room.presenter,
+    presenterStream: room.presenterStream,
+    participants: room.participants,
+    presenterQuality: room.presenterQuality,
+    sendQualityStatus: room.sendQualityStatus,
+  });
 
   if (room.status === "cheia") {
     return (
@@ -61,6 +70,7 @@ export function RoomView({ roomId, name }: { roomId: string; name: string }) {
             alone={room.participants.length <= 1}
             presenter={room.presenter}
             presenterStream={room.presenterStream}
+            quality={quality}
           />
           <ControlBar
             canShare={canShareScreen()}
