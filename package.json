@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@moq/net": "0.4.2",
     "lucide-react": "^1.55.0",
     "next": "16.4.0",
     "react": "19.3.0",

@@ -12,7 +12,8 @@ export default function Home() {
       </header>
       <HomeForm />
       <p className="text-sm text-muted">
-        A tela vai direto do seu navegador pro de quem está assistindo. Nada passa por servidor.
+        A tela passa por um servidor de vídeo embaralhada com uma chave que só quem está na sala
+        recebe. Sem cadastro.
       </p>
       <DesktopDownloadLink />
     </main>

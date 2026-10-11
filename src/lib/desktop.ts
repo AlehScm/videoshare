@@ -118,10 +118,20 @@ export async function createPcmAudioTrack(port: MessagePort): Promise<{ track: M
     node.port.postMessage(copy, [copy]);
   };
   port.start();
-  await context.resume().catch(() => {});
+  // Sem um clique na página o navegador deixa o áudio suspenso e o resume() nunca resolve;
+  // não espera por ele e tenta de novo na primeira interação.
+  const resume = () => void context.resume().catch(() => {});
+  resume();
+  const events = ["pointerdown", "keydown"] as const;
+  const onGesture = () => {
+    resume();
+    if (context.state === "running") events.forEach((type) => window.removeEventListener(type, onGesture));
+  };
+  if (context.state !== "running") events.forEach((type) => window.addEventListener(type, onGesture));
   return {
     track: destination.stream.getAudioTracks()[0],
     close: () => {
+      events.forEach((type) => window.removeEventListener(type, onGesture));
       port.close();
       node.disconnect();
       void context.close();

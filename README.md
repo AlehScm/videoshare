@@ -43,10 +43,10 @@ O instalador não tem assinatura digital. Na primeira vez o Windows mostra "O Wi
 ## Como funciona
 
 - **Next.js com `output: "export"`**: o build é só HTML/CSS/JS e pode ser hospedado em qualquer lugar.
-- **[Trystero](https://github.com/dmotz/trystero)**: os navegadores se encontram por relays públicos do Nostr (só pra trocar o "aperto de mão" do WebRTC). Depois a presença e a tela vão direto de um navegador pro outro, P2P.
+- **[Trystero](https://github.com/dmotz/trystero)**: os navegadores se encontram por relays públicos do Nostr (só pra trocar o "aperto de mão" do WebRTC). Depois a presença e a chave da transmissão vão direto de um navegador pro outro, P2P. A tela vai pelo servidor de vídeo (ver "Modo servidor"), com o P2P de reserva.
 - **Presença**: cada participante manda `{ name, joinedAt, sharingSince }` ao conectar e de novo quando começa ou para de compartilhar.
 - **Limite de 6 por sala** (`MAX_PER_ROOM` em `src/hooks/useRoom.ts`): quem chega além do limite vê "sala cheia" e sai sozinho.
-- **Compartilhar tela**: qualquer pessoa, uma por vez. Quem apresenta envia o stream do `getDisplayMedia` (com o áudio da aba ou do sistema, quando o navegador oferece) pra cada participante, inclusive pra quem entra depois. Se outra pessoa clicar em compartilhar enquanto alguém apresenta, aparece uma confirmação e a tela dela substitui a atual: vence quem começou por último.
+- **Compartilhar tela**: qualquer pessoa, uma por vez. Quem apresenta captura com `getDisplayMedia` (com o áudio da aba ou do sistema, quando o navegador oferece) e manda 1 cópia pro servidor de vídeo. No modo P2P, manda uma cópia pra cada participante, inclusive pra quem entra depois. Se outra pessoa clicar em compartilhar enquanto alguém apresenta, aparece uma confirmação e a tela dela substitui a atual: vence quem começou por último.
 - **Volume**: cada pessoa que assiste ajusta o volume (ou silencia) a tela compartilhada só no próprio computador, pelo controle no canto do palco. O valor fica salvo no navegador.
 - **Qualidade escolhida por quem apresenta** (`src/lib/quality.ts`, `src/lib/media.ts`, `changePreset`/`retuneSenders` em `useRoom.ts`):
   - **Seletor:** fica ao lado de "Compartilhar tela". Opções de 480p, 720p ou 1080p a 30 ou 60 fps, padrão **720p · 30 fps**. A escolha fica salva no navegador.
@@ -58,12 +58,34 @@ O instalador não tem assinatura digital. Na primeira vez o Windows mostra "O Wi
   - **Pra quem apresenta:** o envio pra cada pessoa.
   - **O problema em português:** internet de envio sem dar conta da qualidade escolhida, computador sobrecarregado, perda de pacotes, ping alto, travadas. A falta de banda é detectada comparando os quadros enviados com os capturados, pra não acusar tela parada. Quem apresenta avisa os outros (action `qstat`, com a qualidade escolhida e os fps capturados), então quem assiste sabe se o problema é do lado de lá ou do seu.
   - **Sem falso alarme:** poucos fps, travadas e "sem imagem" só contam quando a tela de quem apresenta está se mexendo. A perda é medida numa janela de 5 s. Cada problema só aparece depois de 3 medições seguidas e só some depois de 3 boas.
-- **Repetidor automático** (`src/lib/relay.ts`, lógica em `useRoom.ts`): quando a internet de envio de quem apresenta não dá conta, um amigo com upload melhor recebe 1 cópia e repassa pros outros. Sem servidor nenhum.
+- **Repetidor automático** (`src/lib/relay.ts`, lógica em `useRoom.ts`): só no modo P2P. Quando a internet de envio de quem apresenta não dá conta, um amigo com upload melhor recebe 1 cópia e repassa pros outros.
   - **Quando liga:** quem apresenta está limitado (banda ou processador) há 8 s e tem 3 ou mais pessoas assistindo.
   - **Quem vira repetidor:** o computador com maior upload medido, que precisa aguentar `(pessoas − 1) × taxa da qualidade × 1,5`. O upload é medido assim: quem apresenta pede a cada computador ~2 MB por data channel (actions `probeReq`/`probeData`).
   - **Troca sem tela preta:** o repetidor repassa o stream recebido (`room.addStream` com a trilha remota). Cada pessoa confirma (`relayAck`) quando a cópia dele chegou, e só então quem apresenta desliga o envio direto pra ela.
   - **Se o repetidor sair:** quem apresenta volta a mandar direto. Se continuar limitado, escolhe outro repetidor.
   - **Custos:** ~100–200 ms a mais de atraso, e o navegador do repetidor recodifica o vídeo (perde um pouco de qualidade). O ícone de qualidade mostra o caminho ("Direto de Ana" / "Via Bruno (repetidor)"), e a lista de participantes marca o repetidor.
+
+## Modo servidor (`src/lib/moq/`)
+
+A tela vai sempre por um servidor de vídeo [MoQ](https://moq.dev) (Media over QUIC): quem apresenta codifica e envia **uma** cópia, e o servidor entrega pra todo mundo. No P2P eram uma codificação e um envio por pessoa, e era isso que derrubava o fps com a sala cheia.
+
+- **Servidor:** o retransmissor público `https://cdn.moq.dev/anon`, sem conta nem cartão. Pra testar outro, grave a URL em `localStorage["videoshare:moqRelay"]`. Com `"off"`, o modo servidor fica desligado.
+- **Envio** (`publisher.ts`):
+  - **Caminho:** `MediaStreamTrackProcessor` → `VideoEncoder`/`AudioEncoder` (WebCodecs) → criptografia → `@moq/net`, com trilhas `v` e `a` num broadcast de nome aleatório.
+  - **Vídeo:** H.264 pela placa de vídeo quando der, senão VP8. Um grupo por quadro-chave, a cada 2 s, com a config do decoder no começo, então quem entra no meio começa limpo.
+  - **Tela parada:** a captura não gera quadros, então o último é reenviado 1×/s.
+  - **Áudio:** Opus 128 kbps.
+- **Recebimento** (`subscriber.ts`):
+  - **Caminho:** `@moq/net` → descriptografia → `VideoDecoder`/`AudioDecoder`.
+  - **Saída:** o vídeo vira trilha por `MediaStreamTrackGenerator`, e o áudio passa pelo mesmo player PCM do app de desktop. Sai um `MediaStream` comum, então palco, tela cheia e volume funcionam igual.
+- **Criptografia** (`crypto.ts`):
+  - **Chave:** cada quadro é cifrado com AES-GCM-128. A chave é nova a cada transmissão e só circula dentro da sala, pelo canal P2P do Trystero (action `mkey`). Quem entra depois recebe a chave ao entrar.
+  - **Saída de alguém:** a chave é trocada e enviada só pra quem ficou.
+  - **Desconhecidos:** quem achar o broadcast no servidor recebe só bytes embaralhados.
+- **Reserva P2P:** o P2P assume nestes casos:
+  - **Servidor fora:** não conectou em 6 s ou caiu por mais de 8 s. Aí volta tudo pro P2P de antes.
+  - **Navegador sem suporte:** quem não consegue assistir pelo servidor (Firefox, Safari) recebe por P2P. Quem assiste também pede o P2P (action `moqFail`) se ficar 10 s sem imagem.
+- **Ícone de qualidade:** mostra "Via servidor (criptografado)". Quem apresenta vê os fps capturados e enviados, a taxa, o codec e se o computador está descartando quadros.
 
 ```
 src/
@@ -73,6 +95,7 @@ src/
   components/room/RoomView.tsx  sala: barra do topo, palco, controles, participantes
   hooks/useRoom.ts              toda a lógica P2P: presença e compartilhamento (Trystero)
   hooks/useStreamStats.ts       estatísticas WebRTC e diagnóstico do ícone de qualidade
+  lib/moq/                      modo servidor: envio, recebimento, criptografia e suporte do navegador
   lib/relay.ts                  regras do repetidor automático e medição do upload
   lib/media.ts                  captura de tela e ajuste do envio (resolução, fps, bitrate)
   lib/quality.ts                opções de qualidade (480p a 1080p, 30/60 fps) e taxas
@@ -85,11 +108,15 @@ desktop/
   src/preload.ts                window.videoshareDesktop (contextBridge)
 ```
 
-## Limitações (por não ter servidor)
+## Limitações
 
 - **Relays de terceiros**: a descoberta depende dos relays públicos do Nostr. O Trystero usa vários ao mesmo tempo, mas eles não são nossos.
-- **Redes restritas**: em NAT simétrico ou rede corporativa o WebRTC direto pode falhar. A solução é configurar um servidor TURN (`turnConfig` no `joinRoom`).
-- **Upload de quem apresenta**: a tela é enviada separadamente pra cada pessoa (até 5). Com 5 pessoas assistindo, 720p30 pede ~12,5 Mbps e 1080p60 ~35 Mbps de upload. Se não der conta e alguém na sala tiver upload melhor, o repetidor automático assume. Se ninguém tiver, a imagem perde quadros e o ícone avisa pra baixar a qualidade. Tirar esse limite de vez exigiria um servidor de mídia (SFU).
+- **Servidor de vídeo de terceiros**: o `cdn.moq.dev` é público, sem garantia, e pode mudar ou sair do ar. Nesse caso o P2P assume. As bibliotecas do MoQ são 0.x, por isso a versão fica fixa (`@moq/net` 0.4.2).
+- **O que a criptografia não esconde**: desconhecidos veem que a transmissão existe, o nome aleatório e quanto tráfego ela gera, mas não o conteúdo.
+- **Atraso**: o modo servidor tem ~0,4 s a mais que o P2P. Quem entra no meio espera até ~2 s pelo próximo quadro-chave.
+- **Firefox e Safari**: não têm `MediaStreamTrackProcessor`/`MediaStreamTrackGenerator`, então apresentam e assistem pelo P2P.
+- **Redes restritas**: em NAT simétrico ou rede corporativa o WebRTC direto pode falhar. A solução é configurar um servidor TURN (`turnConfig` no `joinRoom`). Isso afeta a presença e o modo P2P.
+- **Upload no modo P2P**: a tela é enviada separadamente pra cada pessoa (até 5). Com 5 pessoas assistindo, 720p30 pede ~12,5 Mbps e 1080p60 ~35 Mbps de upload. Se não der conta e alguém na sala tiver upload melhor, o repetidor automático assume. Se ninguém tiver, a imagem perde quadros e o ícone avisa pra baixar a qualidade. No modo servidor é 1 cópia só.
 - **Celular**: dá pra assistir, mas não compartilhar. Os navegadores de celular não oferecem `getDisplayMedia`.
 - **Áudio da tela**: só vai quando o navegador mostra a opção de áudio no seletor.
   - **Aba:** manda só o som da aba.

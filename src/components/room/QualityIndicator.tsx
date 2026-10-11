@@ -28,7 +28,7 @@ function ViewerDetails({ metrics }: { metrics: ViewerMetrics }) {
       <Metric label="Resolução" value={metrics.height ? `${metrics.width}×${metrics.height}` : "—"} />
       <Metric label="Quadros por segundo" value={`${metrics.fps} fps`} />
       <Metric label="Recebendo" value={`${mbps(metrics.kbps)} Mbps`} />
-      <Metric label="Perda de pacotes" value={`${pct(metrics.lossPct)}%`} />
+      <Metric label="Perda de pacotes" value={metrics.lossPct !== null ? `${pct(metrics.lossPct)}%` : "—"} />
       <Metric label="Ping" value={metrics.rttMs !== null ? `${metrics.rttMs} ms` : "—"} />
       <Metric label="Travadas (1 min)" value={String(metrics.freezes)} />
       <Metric label="Codec" value={metrics.codec ?? "—"} />
@@ -135,7 +135,9 @@ export function QualityIndicator({ report }: { report: QualityReport | null }) {
               {report.rows && (
                 <>
                   <p className="text-muted">
-                    Enviando pra {report.rows.length} {report.rows.length === 1 ? "pessoa" : "pessoas"}
+                    {(report.audience ?? report.rows.length) === 1
+                      ? "1 pessoa assistindo"
+                      : `${report.audience ?? report.rows.length} pessoas assistindo`}
                   </p>
                   <SenderDetails rows={report.rows} />
                 </>

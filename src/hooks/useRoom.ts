@@ -11,6 +11,10 @@ import {
   tuneVideoSender,
   type CapturedScreen,
 } from "@/lib/media";
+import { exportKey, generateKey, importKey } from "@/lib/moq/crypto";
+import { MoqPublisher } from "@/lib/moq/publisher";
+import { MoqSubscriber } from "@/lib/moq/subscriber";
+import { canPublishMoq, canWatchMoq, moqRelayUrl } from "@/lib/moq/support";
 import { MAX_NAME_LENGTH } from "@/lib/name-storage";
 import {
   DEFAULT_PRESET,
@@ -36,14 +40,30 @@ const PROBE_FIRST_DELAY_MS = 1500;
 const PROBE_STAGGER_MS = 1200;
 const PROBE_ON_JOIN_DELAY_MS = 3000;
 
-/** `relay` só é preenchido por quem apresenta: quem está repassando a tela dele. */
+/**
+ * `relay` e `moq` só são preenchidos por quem apresenta: quem está repassando a tela dele (P2P)
+ * e o nome da transmissão no servidor MoQ. `moqWatch`: este navegador consegue assistir pelo servidor.
+ */
 type Hello = {
   name: string;
   joinedAt: number;
   sharingSince: number | null;
   device?: Device;
   relay: string | null;
+  moq: string | null;
+  moqWatch?: boolean;
 };
+
+/** Chave da transmissão no servidor; só circula dentro da sala, pelo P2P. */
+type MoqKeyMessage = { id: number; key: string };
+
+const MOQ_NAME = /^vs-[0-9a-f]{32}$/;
+const MAX_KEYS_PER_PRESENTER = 3;
+
+function randomBroadcastName(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return `vs-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
 
 export type Limitation = "none" | "cpu" | "bandwidth" | "other";
 /** O que quem apresenta conta pros outros sobre o próprio envio (ver useStreamStats). */
@@ -77,7 +97,7 @@ export type RoomStatus = "entrando" | "na-sala" | "cheia" | "erro";
 
 function parseHello(data: unknown): Hello | null {
   if (typeof data !== "object" || data === null) return null;
-  const { name, joinedAt, sharingSince, device, relay } = data as Record<string, unknown>;
+  const { name, joinedAt, sharingSince, device, relay, moq, moqWatch } = data as Record<string, unknown>;
   if (typeof name !== "string" || typeof joinedAt !== "number") return null;
   const clean = name.trim().slice(0, MAX_NAME_LENGTH);
   if (!clean) return null;
@@ -88,6 +108,9 @@ function parseHello(data: unknown): Hello | null {
     // Versões antigas não mandam `device` e não sabem repassar; ficam fora da escolha do repetidor.
     device: device === "desktop" || device === "mobile" ? device : undefined,
     relay: typeof relay === "string" ? relay : null,
+    moq: typeof moq === "string" && MOQ_NAME.test(moq) ? moq : null,
+    // Versões antigas não mandam `moqWatch`: recebem pelo P2P.
+    moqWatch: moqWatch === true,
   };
 }
 
@@ -137,7 +160,9 @@ export function useRoom(roomId: string, name: string) {
   const probeReqRef = useRef<MessageAction<number> | null>(null);
   const probeDataRef = useRef<MessageAction<Uint8Array> | null>(null);
   const relayAckRef = useRef<MessageAction<number> | null>(null);
-  const meRef = useRef<Hello>({ name, joinedAt: 0, sharingSince: null, relay: null });
+  const mkeyRef = useRef<MessageAction<MoqKeyMessage> | null>(null);
+  const moqFailRef = useRef<MessageAction<string> | null>(null);
+  const meRef = useRef<Hello>({ name, joinedAt: 0, sharingSince: null, relay: null, moq: null });
   const selfIdRef = useRef("");
   const peersRef = useRef<Record<string, Hello>>({});
   const streamsRef = useRef<Record<string, MediaStream>>({});
@@ -158,6 +183,15 @@ export function useRoom(roomId: string, name: string) {
   // Repetidor: o que está repassando e a qualidade escolhida por quem apresenta.
   const forwardingRef = useRef<Forwarding | null>(null);
   const presenterPresetRef = useRef<QualityPreset>(DEFAULT_PRESET);
+  // Servidor MoQ, quem apresenta: publicador, chave atual e quem recebe pelo P2P mesmo assim
+  // (navegador sem suporte ou que não conseguiu receber pelo servidor).
+  const publisherRef = useRef<MoqPublisher | null>(null);
+  const keyRef = useRef<{ key: CryptoKey; id: number; encoded: string } | null>(null);
+  const p2pPeersRef = useRef(new Set<string>());
+  // Servidor MoQ, quem assiste: chaves recebidas por quem apresenta e o assinante atual.
+  const keysRef = useRef(new Map<string, Map<number, CryptoKey>>());
+  const subscriberRef = useRef<MoqSubscriber | null>(null);
+  const moqFailedRef = useRef(new Set<string>());
 
   const [selfId, setSelfId] = useState<string | null>(null);
   const [me, setMe] = useState<Hello | null>(null);
@@ -169,6 +203,8 @@ export function useRoom(roomId: string, name: string) {
   const [presenterQuality, setPresenterQuality] = useState<PresenterQuality | null>(null);
   const [relaying, setRelaying] = useState(0);
   const [relayUnavailable, setRelayUnavailable] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [moqStream, setMoqStream] = useState<MediaStream | null>(null);
 
   const showNotice = useCallback((message: string) => {
     clearTimeout(noticeTimer.current);
@@ -189,8 +225,12 @@ export function useRoom(roomId: string, name: string) {
     setStreams(streamsRef.current);
   }, []);
 
-  /** Para a captura local (e o áudio do app de desktop, se houver). */
+  /** Para a captura local (e o áudio do app de desktop e o envio pro servidor, se houver). */
   const endCapture = useCallback(() => {
+    publisherRef.current?.close();
+    publisherRef.current = null;
+    keyRef.current = null;
+    p2pPeersRef.current.clear();
     stopTracks(localStreamRef.current);
     localStreamRef.current = null;
     releaseRef.current();
@@ -212,6 +252,132 @@ export function useRoom(roomId: string, name: string) {
     },
     [retuneSenders],
   );
+
+  // ---- Servidor MoQ: lado de quem apresenta --------------------------------------------
+
+  /** Manda a chave atual (pra uma pessoa ou pra sala toda) pelo P2P. */
+  const sendKey = useCallback((target?: string) => {
+    const current = keyRef.current;
+    if (!current) return;
+    void mkeyRef.current
+      ?.send({ id: current.id, key: current.encoded }, target ? { target } : undefined)
+      .catch(() => {});
+  }, []);
+
+  /** Manda direto (P2P) uma vez por pessoa: navegador sem suporte, falha no servidor ou modo P2P. */
+  const sendP2P = useCallback(
+    (peerId: string) => {
+      const room = roomRef.current;
+      const stream = localStreamRef.current;
+      if (!room || !stream || p2pPeersRef.current.has(peerId)) return;
+      p2pPeersRef.current.add(peerId);
+      sendScreen(room, stream, peerId);
+    },
+    [sendScreen],
+  );
+
+  /** Servidor caiu ou não respondeu: todo mundo passa a receber direto. */
+  const fallbackToP2P = useCallback(
+    (reason: string) => {
+      const publisher = publisherRef.current;
+      if (!publisher) return;
+      publisher.close();
+      publisherRef.current = null;
+      keyRef.current = null;
+      setPublishing(false);
+      const room = roomRef.current;
+      if (!room || !localStreamRef.current) return;
+      Object.keys(room.getPeers()).forEach(sendP2P);
+      updateMe({ moq: null });
+      showNotice(`O servidor de transmissão falhou (${reason}); passando pra conexão direta.`);
+    },
+    [sendP2P, showNotice, updateMe],
+  );
+
+  /** Tenta publicar no servidor. Devolve o nome da transmissão, ou `null` pra ficar no P2P. */
+  const startMoq = useCallback(
+    async (stream: MediaStream): Promise<string | null> => {
+      const relay = moqRelayUrl();
+      if (!relay || !canPublishMoq()) return null;
+      const key = await generateKey();
+      const encoded = await exportKey(key);
+      const id = 1;
+      const broadcastName = randomBroadcastName();
+      const publisher = new MoqPublisher({
+        relay,
+        name: broadcastName,
+        stream,
+        preset: presetRef.current,
+        key,
+        keyId: id,
+        onFailure: fallbackToP2P,
+      });
+      publisherRef.current = publisher;
+      keyRef.current = { key, id, encoded };
+      const ok = await publisher.start().catch(() => false);
+      if (ok && publisherRef.current === publisher && localStreamRef.current === stream) return broadcastName;
+      publisher.close();
+      if (publisherRef.current === publisher) {
+        publisherRef.current = null;
+        keyRef.current = null;
+      }
+      return null;
+    },
+    [fallbackToP2P],
+  );
+
+  /** Alguém saiu: chave nova só pra quem ficou. Manda antes de usar, pra ninguém ficar sem imagem. */
+  const rotateKey = useCallback(async () => {
+    const publisher = publisherRef.current;
+    const current = keyRef.current;
+    if (!publisher || !current) return;
+    const key = await generateKey();
+    const encoded = await exportKey(key);
+    const id = (current.id % 255) + 1;
+    if (publisherRef.current !== publisher) return;
+    keyRef.current = { key, id, encoded };
+    sendKey();
+    setTimeout(() => {
+      if (publisherRef.current === publisher && keyRef.current?.id === id) publisher.rotateKey(key, id);
+    }, 500);
+  }, [sendKey]);
+
+  // ---- Servidor MoQ: lado de quem assiste ----------------------------------------------
+
+  const closeSubscriber = useCallback(() => {
+    subscriberRef.current?.close();
+    subscriberRef.current = null;
+    setMoqStream(null);
+  }, []);
+
+  /** Assina a transmissão de quem apresenta no servidor; se não chegar nada, pede o P2P. */
+  const syncSubscriber = useCallback(() => {
+    const presenter = remotePresenter(peersRef.current);
+    const broadcastName = presenter?.hello.moq ?? null;
+    const want =
+      presenter && broadcastName && !localStreamRef.current && canWatchMoq() && !moqFailedRef.current.has(broadcastName)
+        ? { presenterId: presenter.id, name: broadcastName }
+        : null;
+    if (subscriberRef.current && subscriberRef.current.name !== want?.name) closeSubscriber();
+    if (!want || subscriberRef.current) return;
+    const relay = moqRelayUrl();
+    if (!relay) return;
+    const subscriber: MoqSubscriber = new MoqSubscriber({
+      relay,
+      name: want.name,
+      getKey: (id) => keysRef.current.get(want.presenterId)?.get(id),
+      onLive: (stream) => {
+        if (subscriberRef.current === subscriber) setMoqStream(stream);
+      },
+      onFailure: () => {
+        if (subscriberRef.current !== subscriber) return;
+        moqFailedRef.current.add(want.name);
+        closeSubscriber();
+        void moqFailRef.current?.send(want.name, { target: want.presenterId }).catch(() => {});
+      },
+    });
+    subscriberRef.current = subscriber;
+  }, [closeSubscriber]);
 
   // ---- Repetidor: lado de quem repassa -------------------------------------------------
 
@@ -305,7 +471,8 @@ export function useRoom(roomId: string, name: string) {
     directOffRef.current.clear();
     setLocalStream(null);
     setRelayUnavailable(false);
-    updateMe({ sharingSince: null, relay: null });
+    setPublishing(false);
+    updateMe({ sharingSince: null, relay: null, moq: null });
   }, [endCapture, updateMe]);
 
   /** Quem apresenta escolhe a qualidade; durante a transmissão a troca vale na hora. */
@@ -314,6 +481,7 @@ export function useRoom(roomId: string, name: string) {
       presetRef.current = next;
       setPreset(next);
       savePreset(next);
+      publisherRef.current?.setPreset(next);
       const track = localStreamRef.current?.getVideoTracks()[0];
       if (track) void applyPresetToTrack(track, next).then(retuneSenders);
     },
@@ -330,7 +498,8 @@ export function useRoom(roomId: string, name: string) {
     (status: Omit<QualityStatus, "preset">) => {
       void qstatRef.current?.send({ ...status, preset: presetKey(presetRef.current) }).catch(() => {});
       const room = roomRef.current;
-      if (!room || !localStreamRef.current || relayRef.current) return;
+      // Pelo servidor só existe um envio; repetidor só faz sentido no P2P.
+      if (!room || !localStreamRef.current || relayRef.current || publisherRef.current) return;
 
       const limited = status.limitation === "bandwidth" || status.limitation === "cpu";
       if (!limited) {
@@ -383,20 +552,44 @@ export function useRoom(roomId: string, name: string) {
       localStreamRef.current = stream;
       releaseRef.current = release;
       probedRef.current.clear();
+      p2pPeersRef.current.clear();
       setLocalStream(stream);
       updateForwarding();
+      closeSubscriber();
       stream.getVideoTracks()[0]?.addEventListener("ended", stopShare, { once: true });
-      updateMe({ sharingSince: nextSharingSince(), relay: null });
-      const connected = Object.keys(room.getPeers());
-      connected.forEach((peerId) => sendScreen(room, stream, peerId));
-      connected.forEach((peerId, i) =>
-        setTimeout(() => requestProbe(peerId), PROBE_FIRST_DELAY_MS + i * PROBE_STAGGER_MS),
-      );
+      updateMe({ sharingSince: nextSharingSince(), relay: null, moq: null });
       if (stream.getAudioTracks().length === 0 && !selection) {
         showNotice("Compartilhando sem som. Pra mandar o áudio, marque a opção de áudio no seletor do navegador.");
       }
+
+      // Sempre pelo servidor quando der; quem não consegue assistir por lá recebe direto.
+      const broadcastName = await startMoq(stream);
+      if (localStreamRef.current !== stream) return;
+      const connected = Object.keys(room.getPeers());
+      if (broadcastName) {
+        setPublishing(true);
+        sendKey();
+        updateMe({ moq: broadcastName });
+        connected.filter((id) => !peersRef.current[id]?.moqWatch).forEach(sendP2P);
+        return;
+      }
+      connected.forEach(sendP2P);
+      connected.forEach((peerId, i) =>
+        setTimeout(() => requestProbe(peerId), PROBE_FIRST_DELAY_MS + i * PROBE_STAGGER_MS),
+      );
     },
-    [nextSharingSince, requestProbe, sendScreen, showNotice, stopShare, updateForwarding, updateMe],
+    [
+      closeSubscriber,
+      nextSharingSince,
+      requestProbe,
+      sendKey,
+      sendP2P,
+      showNotice,
+      startMoq,
+      stopShare,
+      updateForwarding,
+      updateMe,
+    ],
   );
 
   useEffect(() => {
@@ -407,10 +600,14 @@ export function useRoom(roomId: string, name: string) {
       sharingSince: null,
       device: canShareScreen() ? "desktop" : "mobile",
       relay: null,
+      moq: null,
+      moqWatch: canWatchMoq(),
     };
     peersRef.current = {};
     streamsRef.current = {};
     uploadMbpsRef.current = {};
+    keysRef.current = new Map();
+    moqFailedRef.current = new Set();
 
     import("trystero")
       .then(({ joinRoom, selfId }) => {
@@ -423,6 +620,25 @@ export function useRoom(roomId: string, name: string) {
         const probeReq = room.makeAction<number>("probeReq");
         const probeData = room.makeAction<Uint8Array>("probeData");
         const relayAck = room.makeAction<number>("relayAck");
+        const mkey = room.makeAction<MoqKeyMessage>("mkey");
+        const moqFail = room.makeAction<string>("moqFail");
+
+        // Guarda as últimas chaves de cada pessoa: na troca, quadros com a chave anterior ainda abrem.
+        mkey.onMessage = (data, { peerId }) => {
+          if (typeof data?.id !== "number" || typeof data?.key !== "string") return;
+          void importKey(data.key)
+            .then((key) => {
+              const keys = keysRef.current.get(peerId) ?? new Map<number, CryptoKey>();
+              keys.set(data.id, key);
+              while (keys.size > MAX_KEYS_PER_PRESENTER) keys.delete(keys.keys().next().value!);
+              keysRef.current.set(peerId, keys);
+            })
+            .catch(() => {});
+        };
+        // Quem assiste não conseguiu receber pelo servidor: manda direto pra essa pessoa.
+        moqFail.onMessage = (data, { peerId }) => {
+          if (publisherRef.current && data === publisherRef.current.name) sendP2P(peerId);
+        };
 
         /** Avisa quem apresenta que a cópia do repetidor chegou aqui. */
         const ackRelayIfReady = () => {
@@ -456,6 +672,9 @@ export function useRoom(roomId: string, name: string) {
           updateForwarding();
           ackRelayIfReady();
           requestProbe(peerId);
+          // Apresentando pelo servidor: quem não consegue assistir por lá recebe direto.
+          if (publisherRef.current && !parsed.moqWatch) sendP2P(peerId);
+          syncSubscriber();
           if (parsed.sharingSince === null) return;
 
           const mine = meRef.current.sharingSince;
@@ -493,9 +712,12 @@ export function useRoom(roomId: string, name: string) {
         room.onPeerJoin = (peerId) => {
           void hello.send(meRef.current, { target: peerId });
           const stream = localStreamRef.current;
-          if (stream) {
+          if (stream && publisherRef.current) {
+            // Pelo servidor: só a chave. Se o navegador da pessoa não assiste por lá, o hello dela decide.
+            sendKey(peerId);
+          } else if (stream) {
             // Manda direto também; se houver repetidor, a pessoa confirma e o direto é desligado.
-            sendScreen(room, stream, peerId);
+            sendP2P(peerId);
             setTimeout(() => requestProbe(peerId), PROBE_ON_JOIN_DELAY_MS);
           }
           if (forwardingRef.current) forwardTo(peerId);
@@ -507,10 +729,14 @@ export function useRoom(roomId: string, name: string) {
           delete uploadMbpsRef.current[peerId];
           probedRef.current.delete(peerId);
           directOffRef.current.delete(peerId);
+          p2pPeersRef.current.delete(peerId);
+          keysRef.current.delete(peerId);
           forwardingRef.current?.targets.delete(peerId);
           if (forwardingRef.current) setRelaying(forwardingRef.current.targets.size);
           if (peerId === relayRef.current) deactivateRelay();
+          if (publisherRef.current) void rotateKey();
           updateForwarding();
+          syncSubscriber();
           retuneSenders();
         };
         room.onPeerStream = (stream, peerId) => {
@@ -525,6 +751,8 @@ export function useRoom(roomId: string, name: string) {
         probeReqRef.current = probeReq;
         probeDataRef.current = probeData;
         relayAckRef.current = relayAck;
+        mkeyRef.current = mkey;
+        moqFailRef.current = moqFail;
         selfIdRef.current = selfId;
         setPeers({});
         setStreams({});
@@ -540,6 +768,7 @@ export function useRoom(roomId: string, name: string) {
       cancelled = true;
       clearTimeout(noticeTimer.current);
       endCapture();
+      closeSubscriber();
       forwardingRef.current = null;
       relayRef.current = null;
       void roomRef.current?.leave();
@@ -549,20 +778,26 @@ export function useRoom(roomId: string, name: string) {
       probeReqRef.current = null;
       probeDataRef.current = null;
       relayAckRef.current = null;
+      mkeyRef.current = null;
+      moqFailRef.current = null;
     };
   }, [
     roomId,
     name,
+    closeSubscriber,
     deactivateRelay,
     endCapture,
     forwardTo,
     requestProbe,
     retuneForwarding,
     retuneSenders,
-    sendScreen,
+    rotateKey,
+    sendKey,
+    sendP2P,
     setStream,
     showNotice,
     stopShare,
+    syncSubscriber,
     updateForwarding,
   ]);
 
@@ -583,9 +818,10 @@ export function useRoom(roomId: string, name: string) {
     room.onPeerLeave = null;
     room.onPeerStream = null;
     endCapture();
+    closeSubscriber();
     void room.leave();
     roomRef.current = null;
-  }, [endCapture, isFull]);
+  }, [closeSubscriber, endCapture, isFull]);
 
   const participants = ranked.slice(0, MAX_PER_ROOM);
 
@@ -600,11 +836,21 @@ export function useRoom(roomId: string, name: string) {
   // Recebe pelo repetidor quando a cópia dele já chegou; até lá, segue no direto.
   const viaRelay = relay && !relay.isSelf && streams[relay.id] ? relay.id : null;
 
+  // Pelo servidor quando a imagem de lá já chegou; senão, o que vier pelo P2P.
+  const viaServer = presenter !== null && !presenter.isSelf && presenter.moq !== null && moqStream !== null;
+
   const presenterStream = presenter
     ? presenter.isSelf
       ? localStream
-      : (streams[viaRelay ?? presenter.id] ?? null)
+      : viaServer
+        ? moqStream
+        : (streams[viaRelay ?? presenter.id] ?? null)
     : null;
+
+  const transport: "servidor" | "p2p" = presenter?.isSelf ? (publishing ? "servidor" : "p2p") : viaServer ? "servidor" : "p2p";
+
+  const getPublisherStats = useCallback(() => publisherRef.current?.stats ?? null, []);
+  const getSubscriberStats = useCallback(() => subscriberRef.current?.stats ?? null, []);
 
   const status: RoomStatus = failed
     ? "erro"
@@ -632,5 +878,8 @@ export function useRoom(roomId: string, name: string) {
     sendQualityStatus,
     preset,
     changePreset,
+    transport,
+    getPublisherStats,
+    getSubscriberStats,
   };
 }

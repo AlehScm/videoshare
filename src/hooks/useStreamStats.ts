@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Limitation, Participant, PresenterQuality, QualityStatus } from "@/hooks/useRoom";
+import type { PublisherStats } from "@/lib/moq/publisher";
+import type { SubscriberStats } from "@/lib/moq/subscriber";
 import { presetBitrate, presetLabel, type QualityPreset } from "@/lib/quality";
 
 const POLL_MS = 1000;
@@ -25,7 +27,8 @@ export type ViewerMetrics = {
   width: number;
   fps: number;
   kbps: number;
-  lossPct: number;
+  /** `null` pelo servidor: lá não há perda de pacote medível pelo navegador. */
+  lossPct: number | null;
   rttMs: number | null;
   codec: string | null;
   freezes: number;
@@ -56,6 +59,8 @@ export type QualityReport = {
   issues: string[];
   viewer?: ViewerMetrics;
   rows?: SendRow[];
+  /** Quantas pessoas estão assistindo (quem apresenta). */
+  audience?: number;
 };
 
 type Options = {
@@ -71,6 +76,9 @@ type Options = {
   /** Pra quantas pessoas eu estou repassando (0 se não sou o repetidor). */
   relaying: number;
   relayUnavailable: boolean;
+  transport: "servidor" | "p2p";
+  getPublisherStats: () => PublisherStats | null;
+  getSubscriberStats: () => SubscriberStats | null;
 };
 
 type Stat = Record<string, unknown> & { id: string; type: string; timestamp: number };
@@ -93,6 +101,16 @@ function codecLabel(mimeType: unknown): string | null {
   if (typeof mimeType !== "string") return null;
   const name = mimeType.split("/")[1]?.toUpperCase() ?? "";
   return name === "H264" ? "H.264" : name || null;
+}
+
+/** Nome legível de um codec WebCodecs ("avc1.64002A" → "H.264"). */
+function webCodecLabel(codec: string | null): string | null {
+  if (!codec) return null;
+  if (codec.startsWith("avc1")) return "H.264";
+  if (codec.startsWith("vp09")) return "VP9";
+  if (codec.startsWith("av01")) return "AV1";
+  if (codec === "vp8") return "VP8";
+  return codec;
 }
 
 function selectedPair(stats: Map<string, Stat>): Stat | undefined {
@@ -277,11 +295,12 @@ export function useStreamStats(options: Options): QualityReport | null {
           level: "ruim",
         });
       }
-      if (metrics.lossPct >= 2) {
+      const lossPct = metrics.lossPct ?? 0;
+      if (lossPct >= 2) {
         candidates.push({
           key: "perda",
-          text: `Perda de ${pct(metrics.lossPct)}% dos pacotes: sua conexão está instável (Wi-Fi fraco?).`,
-          level: metrics.lossPct >= 8 ? "ruim" : "instavel",
+          text: `Perda de ${pct(lossPct)}% dos pacotes: sua conexão está instável (Wi-Fi fraco?).`,
+          level: lossPct >= 8 ? "ruim" : "instavel",
         });
       }
       if (metrics.rttMs !== null && metrics.rttMs >= 300) {
@@ -441,12 +460,138 @@ export function useStreamStats(options: Options): QualityReport | null {
           ? "Ninguém assistindo"
           : "Medindo…";
       const path = relay ? `${relay.name} está repassando sua tela pros outros` : "Direto pra cada pessoa";
-      return { role: "apresentando", level, summary, chosen, path, issues, rows };
+      return { role: "apresentando", level, summary, chosen, path, issues, rows, audience: connections.length };
+    }
+
+    // ---- Pelo servidor MoQ: números do publicador/assinante em vez do getStats() ----------
+
+    function measureServerPresenter(): QualityReport | null {
+      const { getPublisherStats, getConnections, sendQualityStatus, preset } = latest.current;
+      const stats = getPublisherStats();
+      if (!stats) return null;
+      const audience = Object.keys(getConnections()).length;
+      const chosen = presetLabel(preset);
+
+      const candidates: Candidate[] = [];
+      if (!stats.connected) {
+        candidates.push({
+          key: "servidor",
+          text: "A conexão com o servidor caiu; tentando reconectar (se não voltar, passa pra conexão direta).",
+          level: "ruim",
+        });
+      }
+      if (stats.sourceFps >= MOVING_SOURCE_FPS && stats.droppedFps >= stats.sourceFps * (1 - DROP_RATIO)) {
+        candidates.push({
+          key: "cpu",
+          text: `Seu computador não está dando conta de codificar ${chosen}. Escolha uma qualidade menor ou feche programas pesados.`,
+          level: "instavel",
+        });
+      }
+      const { level, issues } = settle(candidates);
+      const limitation: Limitation = tracked.current.get("cpu")?.shown ? "cpu" : "none";
+      if (tick % STATUS_EVERY_TICKS === 0) sendQualityStatus({ limitation, viewers: audience, sourceFps: stats.sourceFps });
+
+      const row: SendRow = {
+        id: "servidor",
+        name: "Servidor",
+        height: stats.height,
+        fps: stats.sentFps,
+        sourceFps: stats.sourceFps,
+        kbps: stats.kbps,
+        capKbps: Math.round(presetBitrate(preset) / 1000),
+        limitation,
+        lossPct: 0,
+        rttMs: null,
+        note: [webCodecLabel(stats.codec), "1 cópia pra todo mundo"].filter(Boolean).join(" · "),
+      };
+      return {
+        role: "apresentando",
+        level,
+        summary: stats.height ? `${stats.height}p · ${stats.sentFps} fps` : "Conectando ao servidor…",
+        chosen,
+        path: "Via servidor (criptografado)",
+        issues,
+        rows: [row],
+        audience,
+      };
+    }
+
+    function measureServerViewer(): QualityReport | null {
+      const { getSubscriberStats, presenter, presenterQuality } = latest.current;
+      const stats = getSubscriberStats();
+      if (!presenter || !stats) return null;
+      const fresh =
+        presenterQuality?.peerId === presenter.id && Date.now() - presenterQuality.at < STALE_STATUS_MS
+          ? presenterQuality
+          : null;
+      const sourceFps = fresh?.sourceFps ?? 0;
+      const moving = sourceFps >= MOVING_SOURCE_FPS;
+
+      const now = performance.now();
+      if (stats.freezes && moving) freezeTimes.current.push(...Array(stats.freezes).fill(now));
+      freezeTimes.current = freezeTimes.current.filter((t) => now - t < FREEZE_WINDOW_MS);
+
+      const metrics: ViewerMetrics = {
+        width: stats.width,
+        height: stats.height,
+        fps: stats.fps,
+        kbps: stats.kbps,
+        lossPct: null,
+        rttMs: null,
+        codec: webCodecLabel(stats.codec),
+        freezes: freezeTimes.current.length,
+      };
+
+      const chosen = fresh ? presetLabel(fresh.preset) : null;
+      const candidates: Candidate[] = [];
+      const remote = fresh && chosen ? limitationText(fresh.limitation, presenter.name, chosen) : null;
+      if (remote) candidates.push({ key: "remoto", text: remote, level: "instavel" });
+      const silentMs = stats.lastFrameAgoMs ?? 0;
+      if (silentMs >= NO_IMAGE_SECONDS * 1000 && (moving || !fresh)) {
+        candidates.push({
+          key: "sem-imagem",
+          text: "Não está chegando imagem do servidor agora. A conexão pode ter caído por um instante.",
+          level: "ruim",
+        });
+      }
+      if (stats.locked > 0) {
+        candidates.push({
+          key: "chave",
+          text: "Chegando imagem que você ainda não consegue abrir: esperando a chave nova da transmissão.",
+          level: "instavel",
+        });
+      }
+      if (moving && metrics.fps > 0 && metrics.fps < sourceFps * VIEWER_FPS_RATIO) {
+        candidates.push({
+          key: "fps",
+          text: `Chegando ${metrics.fps} de ${Math.round(sourceFps)} quadros por segundo.`,
+          level: metrics.fps < sourceFps * 0.3 ? "ruim" : "instavel",
+        });
+      }
+      if (metrics.freezes > 0) {
+        candidates.push({
+          key: "travadas",
+          text: `A imagem travou ${metrics.freezes} ${metrics.freezes === 1 ? "vez" : "vezes"} no último minuto.`,
+          level: metrics.freezes >= 3 ? "ruim" : "instavel",
+        });
+      }
+
+      const { level, issues } = settle(candidates);
+      const summary = metrics.height ? `${metrics.height}p · ${metrics.fps} fps` : "Medindo…";
+      return { role: "assistindo", level, summary, chosen, path: "Via servidor (criptografado)", issues, viewer: metrics };
     }
 
     async function poll() {
       tick += 1;
-      const next = await (latest.current.presenter?.isSelf ? measurePresenter() : measureViewer()).catch(
+      const { presenter, transport } = latest.current;
+      const measure = presenter?.isSelf
+        ? transport === "servidor"
+          ? async () => measureServerPresenter()
+          : measurePresenter
+        : transport === "servidor"
+          ? async () => measureServerViewer()
+          : measureViewer;
+      const next = await measure().catch(
         () => null,
       );
       if (!cancelled) setReport(next);

@@ -28,6 +28,9 @@ export function RoomView({ roomId, name }: { roomId: string; name: string }) {
     receivingViaRelay: room.receivingViaRelay,
     relaying: room.relaying,
     relayUnavailable: room.relayUnavailable,
+    transport: room.transport,
+    getPublisherStats: room.getPublisherStats,
+    getSubscriberStats: room.getSubscriberStats,
   });
 
   if (room.status === "cheia") {
