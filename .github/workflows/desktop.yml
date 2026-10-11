@@ -21,7 +21,17 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
-      # Publica o instalador e o latest.yml (usado pela atualização automática) no Release da tag.
-      - run: npm run release
+      - run: npm run dist
+      # Uma release só: o publish do electron-builder envia em paralelo e às vezes cria duas.
+      # O latest.yml é o que a atualização automática dos apps instalados consulta.
+      - name: Publicar release
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME"
+          release/videoshare-setup-*.exe
+          release/videoshare-setup-*.exe.blockmap
+          release/latest.yml
+          --title "videoshare $GITHUB_REF_NAME"
+          --notes "Instalador do app de desktop pra Windows."

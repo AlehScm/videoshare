@@ -11,8 +11,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --win --publish never",
-    "release": "npm run build && electron-builder --win --publish always"
+    "dist": "npm run build && electron-builder --win --publish never"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
