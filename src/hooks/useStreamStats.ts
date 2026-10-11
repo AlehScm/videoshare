@@ -42,6 +42,7 @@ export type SendRow = {
   limitation: Limitation;
   lossPct: number;
   rttMs: number | null;
+  note?: string;
 };
 
 export type QualityReport = {
@@ -50,6 +51,8 @@ export type QualityReport = {
   summary: string;
   /** Qualidade escolhida por quem apresenta, quando conhecida. */
   chosen: string | null;
+  /** Por onde a imagem está indo: direto ou via repetidor. */
+  path: string;
   issues: string[];
   viewer?: ViewerMetrics;
   rows?: SendRow[];
@@ -63,6 +66,11 @@ type Options = {
   presenterQuality: PresenterQuality | null;
   sendQualityStatus: (status: Omit<QualityStatus, "preset">) => void;
   preset: QualityPreset;
+  relay: Participant | null;
+  receivingViaRelay: boolean;
+  /** Pra quantas pessoas eu estou repassando (0 se não sou o repetidor). */
+  relaying: number;
+  relayUnavailable: boolean;
 };
 
 type Stat = Record<string, unknown> & { id: string; type: string; timestamp: number };
@@ -185,10 +193,36 @@ export function useStreamStats(options: Options): QualityReport | null {
       };
     }
 
+    /** Se eu sou o repetidor: alguma conexão de repasse está limitada? */
+    async function forwardingLimited(exceptId: string): Promise<boolean> {
+      const connections = Object.entries(latest.current.getConnections()).filter(([id]) => id !== exceptId);
+      const results = await Promise.all(
+        connections.map(async ([, pc]) => {
+          const stats = await readStats(pc).catch(() => null);
+          if (!stats) return false;
+          return [...stats.values()].some((s) => {
+            if (s.type !== "outbound-rtp" || s.kind !== "video") return false;
+            const reason = s.qualityLimitationReason;
+            const fps = num(s, "framesPerSecond");
+            const sourceFps = num(stats.get(String(s.mediaSourceId)), "framesPerSecond");
+            return (
+              reason === "cpu" ||
+              reason === "bandwidth" ||
+              (sourceFps >= MOVING_SOURCE_FPS && fps > 0 && fps < sourceFps * DROP_RATIO)
+            );
+          });
+        }),
+      );
+      return results.some(Boolean);
+    }
+
     async function measureViewer(): Promise<QualityReport | null> {
-      const { getConnections, presenter, presenterStream, presenterQuality } = latest.current;
-      const pc = presenter ? getConnections()[presenter.id] : undefined;
-      if (!presenter || !pc) return null;
+      const { getConnections, presenter, presenterStream, presenterQuality, relay, receivingViaRelay, relaying } =
+        latest.current;
+      if (!presenter) return null;
+      const source = receivingViaRelay && relay ? relay : presenter;
+      const pc = getConnections()[source.id];
+      if (!pc) return null;
       const stats = await readStats(pc);
       const trackId = presenterStream?.getVideoTracks()[0]?.id;
       const inbound = [...stats.values()]
@@ -253,7 +287,7 @@ export function useStreamStats(options: Options): QualityReport | null {
       if (metrics.rttMs !== null && metrics.rttMs >= 300) {
         candidates.push({
           key: "ping",
-          text: `Ping alto (${metrics.rttMs} ms) entre você e ${presenter.name}.`,
+          text: `Ping alto (${metrics.rttMs} ms) entre você e ${source.name}.`,
           level: metrics.rttMs >= 600 ? "ruim" : "instavel",
         });
       }
@@ -272,13 +306,25 @@ export function useStreamStats(options: Options): QualityReport | null {
         });
       }
 
+      if (relaying > 0 && (await forwardingLimited(presenter.id))) {
+        candidates.push({
+          key: "repasse",
+          text: `Sua internet de envio ou seu computador não está dando conta de repassar pra ${people(relaying)}.`,
+          level: "instavel",
+        });
+      }
+
       const { level, issues } = settle(candidates);
       const summary = metrics.height ? `${metrics.height}p · ${metrics.fps} fps` : "Medindo…";
-      return { role: "assistindo", level, summary, chosen, issues, viewer: metrics };
+      const path =
+        (receivingViaRelay && relay ? `Via ${relay.name} (repetidor)` : `Direto de ${presenter.name}`) +
+        (relaying > 0 ? ` · você está repassando pra ${people(relaying)}` : "");
+      return { role: "assistindo", level, summary, chosen, path, issues, viewer: metrics };
     }
 
     async function measurePresenter(): Promise<QualityReport | null> {
-      const { getConnections, participants, presenterStream, sendQualityStatus, preset } = latest.current;
+      const { getConnections, participants, presenterStream, sendQualityStatus, preset, relay, relayUnavailable } =
+        latest.current;
       const trackId = presenterStream?.getVideoTracks()[0]?.id;
       const connections = Object.entries(getConnections());
       const chosen = presetLabel(preset);
@@ -290,11 +336,12 @@ export function useStreamStats(options: Options): QualityReport | null {
           connections.map(async ([peerId, pc]): Promise<SendRow | null> => {
             const stats = await readStats(pc).catch(() => null);
             if (!stats) return null;
-            const outbound = [...stats.values()].find((s) => {
-              if (s.type !== "outbound-rtp" || s.kind !== "video") return false;
-              const source = stats.get(String(s.mediaSourceId));
-              return !trackId || !source || source.trackIdentifier === trackId;
-            });
+            // Desligar e religar o envio (repetidor) deixa envios antigos nas estatísticas;
+            // só vale o que está mandando a trilha atual.
+            const outbounds = [...stats.values()].filter((s) => s.type === "outbound-rtp" && s.kind === "video");
+            const outbound = trackId
+              ? outbounds.find((s) => stats.get(String(s.mediaSourceId))?.trackIdentifier === trackId)
+              : outbounds[0];
             if (!outbound) return null;
             const sourceFps = num(stats.get(String(outbound.mediaSourceId)), "framesPerSecond");
             const remoteIn = [...stats.values()].find(
@@ -333,9 +380,22 @@ export function useStreamStats(options: Options): QualityReport | null {
             };
           }),
         )
-      ).filter((row): row is SendRow => row !== null);
+      )
+        .filter((row): row is SendRow => row !== null)
+        // Com repetidor, o envio direto pros outros é desligado; sobra a linha do repetidor.
+        .filter((row) => !relay || row.id === relay.id || row.kbps > 0)
+        .map((row) =>
+          relay && row.id === relay.id ? { ...row, note: `repassando pra ${people(connections.length - 1)}` } : row,
+        );
 
       const candidates: Candidate[] = [];
+      if (relayUnavailable) {
+        candidates.push({
+          key: "sem-repetidor",
+          text: "Ninguém na sala tem internet de envio suficiente pra repassar sua tela. Escolha uma qualidade menor.",
+          level: "instavel",
+        });
+      }
       if (rows.some((r) => r.limitation === "cpu")) {
         candidates.push({
           key: "cpu",
@@ -370,7 +430,9 @@ export function useStreamStats(options: Options): QualityReport | null {
           ? "bandwidth"
           : "none";
       const sourceFps = rows.reduce((max, r) => Math.max(max, r.sourceFps), 0);
-      if (tick % STATUS_EVERY_TICKS === 0) sendQualityStatus({ limitation, viewers: rows.length, sourceFps });
+      if (tick % STATUS_EVERY_TICKS === 0) {
+        sendQualityStatus({ limitation, viewers: connections.length, sourceFps });
+      }
 
       const best = rows.reduce<SendRow | null>((acc, r) => (!acc || r.height > acc.height ? r : acc), null);
       const summary = best?.height
@@ -378,7 +440,8 @@ export function useStreamStats(options: Options): QualityReport | null {
         : rows.length === 0
           ? "Ninguém assistindo"
           : "Medindo…";
-      return { role: "apresentando", level, summary, chosen, issues, rows };
+      const path = relay ? `${relay.name} está repassando sua tela pros outros` : "Direto pra cada pessoa";
+      return { role: "apresentando", level, summary, chosen, path, issues, rows };
     }
 
     async function poll() {

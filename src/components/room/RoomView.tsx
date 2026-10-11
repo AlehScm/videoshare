@@ -24,6 +24,10 @@ export function RoomView({ roomId, name }: { roomId: string; name: string }) {
     presenterQuality: room.presenterQuality,
     sendQualityStatus: room.sendQualityStatus,
     preset: room.preset,
+    relay: room.relay,
+    receivingViaRelay: room.receivingViaRelay,
+    relaying: room.relaying,
+    relayUnavailable: room.relayUnavailable,
   });
 
   if (room.status === "cheia") {
@@ -87,7 +91,11 @@ export function RoomView({ roomId, name }: { roomId: string; name: string }) {
           />
         </section>
 
-        <ParticipantsPanel participants={room.participants} presenterId={room.presenter?.id ?? null} />
+        <ParticipantsPanel
+          participants={room.participants}
+          presenterId={room.presenter?.id ?? null}
+          relayId={room.relay?.id ?? null}
+        />
       </main>
 
       <div

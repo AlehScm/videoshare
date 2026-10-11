@@ -58,6 +58,12 @@ O instalador não tem assinatura digital. Na primeira vez o Windows mostra "O Wi
   - **Pra quem apresenta:** o envio pra cada pessoa.
   - **O problema em português:** internet de envio sem dar conta da qualidade escolhida, computador sobrecarregado, perda de pacotes, ping alto, travadas. A falta de banda é detectada comparando os quadros enviados com os capturados, pra não acusar tela parada. Quem apresenta avisa os outros (action `qstat`, com a qualidade escolhida e os fps capturados), então quem assiste sabe se o problema é do lado de lá ou do seu.
   - **Sem falso alarme:** poucos fps, travadas e "sem imagem" só contam quando a tela de quem apresenta está se mexendo. A perda é medida numa janela de 5 s. Cada problema só aparece depois de 3 medições seguidas e só some depois de 3 boas.
+- **Repetidor automático** (`src/lib/relay.ts`, lógica em `useRoom.ts`): quando a internet de envio de quem apresenta não dá conta, um amigo com upload melhor recebe 1 cópia e repassa pros outros. Sem servidor nenhum.
+  - **Quando liga:** quem apresenta está limitado (banda ou processador) há 8 s e tem 3 ou mais pessoas assistindo.
+  - **Quem vira repetidor:** o computador com maior upload medido, que precisa aguentar `(pessoas − 1) × taxa da qualidade × 1,5`. O upload é medido assim: quem apresenta pede a cada computador ~2 MB por data channel (actions `probeReq`/`probeData`).
+  - **Troca sem tela preta:** o repetidor repassa o stream recebido (`room.addStream` com a trilha remota). Cada pessoa confirma (`relayAck`) quando a cópia dele chegou, e só então quem apresenta desliga o envio direto pra ela.
+  - **Se o repetidor sair:** quem apresenta volta a mandar direto. Se continuar limitado, escolhe outro repetidor.
+  - **Custos:** ~100–200 ms a mais de atraso, e o navegador do repetidor recodifica o vídeo (perde um pouco de qualidade). O ícone de qualidade mostra o caminho ("Direto de Ana" / "Via Bruno (repetidor)"), e a lista de participantes marca o repetidor.
 
 ```
 src/
@@ -67,6 +73,7 @@ src/
   components/room/RoomView.tsx  sala: barra do topo, palco, controles, participantes
   hooks/useRoom.ts              toda a lógica P2P: presença e compartilhamento (Trystero)
   hooks/useStreamStats.ts       estatísticas WebRTC e diagnóstico do ícone de qualidade
+  lib/relay.ts                  regras do repetidor automático e medição do upload
   lib/media.ts                  captura de tela e ajuste do envio (resolução, fps, bitrate)
   lib/quality.ts                opções de qualidade (480p a 1080p, 30/60 fps) e taxas
   lib/desktop.ts                ponte com o app de desktop e trilha de áudio vinda do Windows
@@ -82,7 +89,7 @@ desktop/
 
 - **Relays de terceiros**: a descoberta depende dos relays públicos do Nostr. O Trystero usa vários ao mesmo tempo, mas eles não são nossos.
 - **Redes restritas**: em NAT simétrico ou rede corporativa o WebRTC direto pode falhar. A solução é configurar um servidor TURN (`turnConfig` no `joinRoom`).
-- **Upload de quem apresenta**: a tela é enviada separadamente pra cada pessoa (até 5). Com 5 pessoas assistindo, 720p30 pede ~12,5 Mbps e 1080p60 ~35 Mbps de upload. Se não der conta, a imagem perde quadros e o ícone avisa pra baixar a qualidade. Tirar esse limite exigiria um servidor de mídia (SFU).
+- **Upload de quem apresenta**: a tela é enviada separadamente pra cada pessoa (até 5). Com 5 pessoas assistindo, 720p30 pede ~12,5 Mbps e 1080p60 ~35 Mbps de upload. Se não der conta e alguém na sala tiver upload melhor, o repetidor automático assume. Se ninguém tiver, a imagem perde quadros e o ícone avisa pra baixar a qualidade. Tirar esse limite de vez exigiria um servidor de mídia (SFU).
 - **Celular**: dá pra assistir, mas não compartilhar. Os navegadores de celular não oferecem `getDisplayMedia`.
 - **Áudio da tela**: só vai quando o navegador mostra a opção de áudio no seletor.
   - **Aba:** manda só o som da aba.

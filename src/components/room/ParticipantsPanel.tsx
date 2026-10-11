@@ -1,4 +1,4 @@
-import { ScreenShare } from "lucide-react";
+import { RadioTower, ScreenShare } from "lucide-react";
 import { MAX_PER_ROOM, type Participant } from "@/hooks/useRoom";
 
 const AVATAR_COLORS = ["bg-[#8fa2ff]", "bg-[#f2a65a]", "bg-[#4fc1b5]", "bg-[#d78bd0]", "bg-[#e8c95a]", "bg-[#7cc3f5]"];
@@ -12,9 +12,10 @@ function avatarColor(id: string): string {
 type Props = {
   participants: Participant[];
   presenterId: string | null;
+  relayId: string | null;
 };
 
-export function ParticipantsPanel({ participants, presenterId }: Props) {
+export function ParticipantsPanel({ participants, presenterId, relayId }: Props) {
   return (
     <aside className="flex flex-col gap-3 rounded-[20px] border border-line bg-panel p-4 lg:min-h-0">
       <h2 className="flex items-baseline justify-between">
@@ -43,6 +44,14 @@ export function ParticipantsPanel({ participants, presenterId }: Props) {
                 <span className="flex items-center gap-1 text-xs font-medium text-tally">
                   <ScreenShare className="size-4" aria-hidden />
                   <span className="sr-only lg:not-sr-only">apresentando</span>
+                </span>
+              ) : participant.id === relayId ? (
+                <span
+                  className="flex items-center gap-1 text-xs font-medium text-signal"
+                  title="Recebe a tela de quem apresenta e repassa pros outros"
+                >
+                  <RadioTower className="size-4" aria-hidden />
+                  <span className="sr-only lg:not-sr-only">repetidor</span>
                 </span>
               ) : (
                 <span className="size-2 rounded-full bg-online" aria-label="online" />

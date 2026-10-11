@@ -43,7 +43,10 @@ function SenderDetails({ rows }: { rows: SendRow[] }) {
       {rows.map((row) => (
         <li key={row.id} className="flex flex-col gap-1 rounded-xl bg-stage/60 px-3 py-2">
           <span className="flex items-baseline justify-between gap-2">
-            <span className="truncate font-medium">{row.name}</span>
+            <span className="truncate font-medium">
+              {row.name}
+              {row.note && <span className="font-normal text-muted"> · {row.note}</span>}
+            </span>
             <span className="shrink-0 text-xs tabular-nums text-muted">
               {row.rttMs !== null ? `${row.rttMs} ms` : ""}
             </span>
@@ -113,6 +116,9 @@ export function QualityIndicator({ report }: { report: QualityReport | null }) {
                   <span className="font-medium text-fg">{report.chosen}</span>
                 </p>
               )}
+              <p className="text-muted">
+                Caminho: <span className="font-medium text-fg">{report.path}</span>
+              </p>
               {report.issues.length > 0 ? (
                 <ul className="flex flex-col gap-1.5">
                   {report.issues.map((issue) => (
